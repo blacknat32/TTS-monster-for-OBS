@@ -1,5 +1,16 @@
-<form action="/your-name/" method="post">
-    {% csrf_token %}
-    {{ form }}
-    <input type="submit" value="Envoyer">
-</form>
+{% load static %}
+<html>
+    <head>
+        <link rel="stylesheet" type="text/css" href="{% static 'listings/style.css' %}">
+    </head>
+    <body>
+
+
+        <form action="/your-name/" method="post">
+            {% csrf_token %}
+            {{ form }}
+            <input type="submit" value="Envoyer">
+        </form>
+
+    </body>
+</html>
