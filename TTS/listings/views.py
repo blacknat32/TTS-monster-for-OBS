@@ -1,14 +1,33 @@
-from django.shortcuts import render
-from django.http import HttpResponse
-from .form import prompt_Form
+import logging
 
-# Create your views here.
+from django.shortcuts import render
+
+from TTS.chatbot import TTSGenerationError, send_audio_to_obs, url_tts
+
+from .form import PromptForm
+
+
+logger = logging.getLogger(__name__)
+
+
 def index(request):
+    audio_url = None
+    error = None
+
     if request.method == 'POST':
-        form = prompt_Form(request.POST)
+        form = PromptForm(request.POST)
         if form.is_valid():
-            # Process the form data
-            pass
+            try:
+                audio_url = url_tts(form.cleaned_data["message"])
+                send_audio_to_obs(audio_url)
+            except TTSGenerationError as exc:
+                logger.exception("Unable to generate or send TTS audio to OBS")
+                error = str(exc)
     else:
-        form = prompt_Form()
-    return render(request, 'listings/index.html', {'form': form})
+        form = PromptForm()
+
+    return render(
+        request,
+        "listings/index.html",
+        {"form": form, "audio_url": audio_url, "error": error},
+    )

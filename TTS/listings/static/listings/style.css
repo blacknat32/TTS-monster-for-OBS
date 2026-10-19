@@ -1,3 +1,32 @@
-form {background: rgba(221, 8, 193, 0.534);margin: 0 auto;width: 30%;padding: 30px;border-radius: 20px; box-shadow: 10px 10px 10px 1px rgba(0, 0, 0, 0.5);display: flex;
-  justify-content: center;
-  align-items: center;}
+body {
+    background: rgb(4, 114, 63);
+    font-family: sans-serif;
+    margin: 0;
+    padding: 2rem;
+}
+
+main {
+    margin: 0 auto;
+    max-width: 48rem;
+}
+
+form {
+    background: rgba(8, 221, 221, 0.534);
+    border: 1px solid;
+    border-radius: 1rem;
+    box-shadow: 10px 10px 10px 1px rgba(0, 0, 0, 0.5);
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 2rem;
+    width: 100%;
+}
+
+textarea {
+    box-sizing: border-box;
+    max-width: 100%;
+    width: 100%;
+}
+
+audio {
+    max-width: 100%;
+}
