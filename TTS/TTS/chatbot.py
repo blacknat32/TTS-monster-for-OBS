@@ -2,6 +2,7 @@ import atexit
 import logging
 import os
 import threading
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -193,10 +194,15 @@ def send_audio_to_obs(audio_url: str) -> Path:
                 "SetInputSettings",
                 {
                     "inputName": input_name,
-                    "inputSettings": {"local_file": str(audio_path.resolve())},
+                    "inputSettings": {
+                        "is_local_file": True,
+                        "local_file": audio_path.resolve().as_posix(),
+                    },
                     "overlay": True,
                 },
             )
+            # Give OBS time to load the new file before restarting playback.
+            time.sleep(0.3)
             client.send(
                 "TriggerMediaInputAction",
                 {
