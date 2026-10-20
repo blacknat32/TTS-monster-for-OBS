@@ -1,4 +1,6 @@
 asgiref==3.12.1
 Django==6.1.2
+obsws-python==1.8.0
 pytz==2021.1
+requests==2.34.2
 sqlparse==0.6.0
