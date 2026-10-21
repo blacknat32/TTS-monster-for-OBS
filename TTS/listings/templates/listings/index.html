@@ -4,16 +4,16 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Générateur de voix</title>
+    <title>Brain-Rot Simulator</title>
     <link rel="stylesheet" href="{% static 'listings/style.css' %}">
   </head>
   <body>
     <main>
-      <h1>Générateur de voix</h1>
+      <h1>Brain-Rot Simulator</h1>
       <form action="{% url 'listings' %}" method="post">
         {% csrf_token %}
         {{ form.as_p }}
-        <button type="submit">Générer l’audio</button>
+        <button type="submit">Get Ear-Rape</button>
       </form>
 
       {% if error %}
