@@ -1,6 +1,7 @@
 import atexit
 import logging
 import os
+import subprocess
 import threading
 import time
 import tomllib
@@ -95,10 +96,67 @@ def disconnect_from_obs() -> None:
                 logger.exception("Failed to close the OBS WebSocket connection")
 
 
+def _wait_for_media_playback(client: Any, input_name: str) -> str:
+    media_state = "OBS_MEDIA_STATE_NONE"
+    for _ in range(20):
+        media_state = client.get_media_input_status(input_name).media_state
+        if media_state in {
+            "OBS_MEDIA_STATE_PLAYING",
+            "OBS_MEDIA_STATE_ENDED",
+            "OBS_MEDIA_STATE_ERROR",
+        }:
+            return media_state
+        time.sleep(0.1)
+    return media_state
+
+
+def _start_media_playback(client: Any, input_name: str) -> None:
+    client.trigger_media_input_action(
+        input_name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"
+    )
+    media_state = _wait_for_media_playback(client, input_name)
+    if media_state not in {"OBS_MEDIA_STATE_PLAYING", "OBS_MEDIA_STATE_ENDED"}:
+        client.trigger_media_input_action(
+            input_name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY"
+        )
+        media_state = _wait_for_media_playback(client, input_name)
+
+    if media_state not in {"OBS_MEDIA_STATE_PLAYING", "OBS_MEDIA_STATE_ENDED"}:
+        raise TTSGenerationError(
+            f"OBS did not start playback for media input '{input_name}' "
+            f"(state: {media_state}). Check the OBS Media Source and its audio settings."
+        )
+
+
+def _get_obs_local_file_path(audio_path: Path, obs_platform: str) -> str:
+    resolved_path = audio_path.resolve()
+    local_file = resolved_path.as_posix()
+    if obs_platform.lower() == "windows" and local_file.startswith("/"):
+        try:
+            result = subprocess.run(
+                ["wslpath", "-w", local_file],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise TTSGenerationError(
+                "OBS runs on Windows, but the TTS app could not convert its file "
+                "path to a Windows path. Run TTS in WSL with wslpath available."
+            ) from exc
+        local_file = result.stdout.strip()
+        if not local_file:
+            raise TTSGenerationError(
+                "Could not convert the TTS audio path to a Windows path for OBS."
+            )
+    return local_file
+
+
 atexit.register(disconnect_from_obs)
 
 
-def url_tts(message: str) -> str:
+def url_tts(message: str, voice_id: str = VOICE_ID) -> str:
     api_key = os.getenv("TTS_MONSTER_API_KEY")
     if not api_key:
         raise TTSGenerationError(
@@ -112,7 +170,7 @@ def url_tts(message: str) -> str:
                 "Content-Type": "application/json",
                 "Authorization": api_key,
             },
-            json={"voice_id": VOICE_ID, "message": message},
+            json={"voice_id": voice_id, "message": message},
             timeout=30,
         )
         response.raise_for_status()
@@ -138,7 +196,6 @@ def url_tts(message: str) -> str:
 def send_audio_to_obs(audio_url: str) -> Path:
     host, port, _, input_name = _load_obs_settings()
 
-    audio_path = None
     try:
         with requests.get(audio_url, stream=True, timeout=30) as response:
             response.raise_for_status()
@@ -190,26 +247,17 @@ def send_audio_to_obs(audio_url: str) -> Path:
                 raise TTSGenerationError(
                     "OBS WebSocket connection was not established."
                 )
-            client.send(
-                "SetInputSettings",
+            obs_platform = client.get_version().platform
+            client.set_input_settings(
+                input_name,
                 {
-                    "inputName": input_name,
-                    "inputSettings": {
-                        "is_local_file": True,
-                        "local_file": audio_path.resolve().as_posix(),
-                    },
-                    "overlay": True,
+                    "is_local_file": True,
+                    "local_file": _get_obs_local_file_path(audio_path, obs_platform),
                 },
+                overlay=True,
+                
             )
-            # Give OBS time to load the new file before restarting playback.
-            time.sleep(0.3)
-            client.send(
-                "TriggerMediaInputAction",
-                {
-                    "inputName": input_name,
-                    "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
-                },
-            )
+            _start_media_playback(client, input_name)
     except (OSError, WebSocketTimeoutException, OBSSDKTimeoutError) as exc:
         disconnect_from_obs()
         raise TTSGenerationError(

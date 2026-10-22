@@ -18,7 +18,9 @@ def index(request):
         form = PromptForm(request.POST)
         if form.is_valid():
             try:
-                audio_url = url_tts(form.cleaned_data["message"])
+                audio_url = url_tts(
+                    form.cleaned_data["message"], form.cleaned_data["voice_id"]
+                )
                 send_audio_to_obs(audio_url)
             except TTSGenerationError as exc:
                 logger.exception("Unable to generate or send TTS audio to OBS")
