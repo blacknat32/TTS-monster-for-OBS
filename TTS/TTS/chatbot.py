@@ -1,7 +1,9 @@
 import atexit
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import tomllib
@@ -17,6 +19,7 @@ API_URL = "https://api.console.tts.monster/generate"
 VOICE_ID = "faa92dd8-0517-49da-8f01-1fb03f0e0096"
 OBS_CONFIG_PATH = Path(__file__).with_name("config file")
 AUDIO_DIRECTORY = Path(__file__).resolve().parent.parent / "media" / "tts"
+AUDIO_CLEANUP_DELAY_SECONDS = 5 * 60
 
 logger = logging.getLogger(__name__)
 _obs_lock = threading.RLock()
@@ -153,6 +156,21 @@ def _get_obs_local_file_path(audio_path: Path, obs_platform: str) -> str:
     return local_file
 
 
+def _delete_audio_file(audio_path: Path) -> None:
+    try:
+        audio_path.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Failed to delete generated audio file %s", audio_path)
+
+
+def _schedule_audio_file_cleanup(audio_path: Path) -> None:
+    cleanup_timer = threading.Timer(
+        AUDIO_CLEANUP_DELAY_SECONDS, _delete_audio_file, args=(audio_path,)
+    )
+    cleanup_timer.daemon = True
+    cleanup_timer.start()
+
+
 atexit.register(disconnect_from_obs)
 
 
@@ -174,6 +192,43 @@ def url_tts(message: str, voice_id: str = VOICE_ID) -> str:
             timeout=30,
         )
         response.raise_for_status()
+    except requests.HTTPError as exc:
+        response = exc.response
+        status_code = response.status_code if response is not None else "unknown"
+        provider_detail = None
+        request_id = None
+        if response is not None:
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = None
+            if isinstance(error_data, dict):
+                for key in ("detail", "error", "message"):
+                    value = error_data.get(key)
+                    if isinstance(value, str) and value.strip():
+                        provider_detail = value.strip()[:300]
+                        break
+            request_id = (
+                response.headers.get("x-request-id")
+                or response.headers.get("request-id")
+            )
+
+        diagnostic = ""
+        if provider_detail:
+            diagnostic += f" API detail: {provider_detail}"
+        if request_id:
+            diagnostic += f" Request ID: {request_id}."
+
+        if isinstance(status_code, int) and status_code >= 500:
+            raise TTSGenerationError(
+                f"TTS Monster returned HTTP {status_code} (server error). "
+                "The failure is on the TTS service side; try again later, and "
+                f"contact TTS Monster support if it continues.{diagnostic}"
+            ) from exc
+        raise TTSGenerationError(
+            f"TTS Monster rejected the request with HTTP {status_code}. "
+            f"Check the selected voice and message.{diagnostic}"
+        ) from exc
     except requests.RequestException as exc:
         raise TTSGenerationError("The TTS service request failed.") from exc
 
@@ -193,39 +248,13 @@ def url_tts(message: str, voice_id: str = VOICE_ID) -> str:
     return audio_url
 
 
-def send_audio_to_obs(audio_url: str) -> Path:
-    host, port, _, input_name = _load_obs_settings()
-
-    try:
-        with requests.get(audio_url, stream=True, timeout=30) as response:
-            response.raise_for_status()
-            content_type = (
-                response.headers.get("Content-Type", "").split(";", 1)[0].lower()
-            )
-            extension_by_type = {
-                "audio/aac": ".aac",
-                "audio/flac": ".flac",
-                "audio/m4a": ".m4a",
-                "audio/mpeg": ".mp3",
-                "audio/ogg": ".ogg",
-                "audio/wav": ".wav",
-                "audio/x-wav": ".wav",
-            }
-            url_extension = Path(urlparse(audio_url).path).suffix.lower()
-            extension = extension_by_type.get(content_type, url_extension)
-            if extension not in {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}:
-                extension = ".wav"
-
-            AUDIO_DIRECTORY.mkdir(parents=True, exist_ok=True)
-            audio_path = AUDIO_DIRECTORY / f"{uuid.uuid4().hex}{extension}"
-            with audio_path.open("wb") as audio_file:
-                for chunk in response.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        audio_file.write(chunk)
-    except requests.RequestException as exc:
-        raise TTSGenerationError("The generated audio could not be downloaded.") from exc
-    except OSError as exc:
-        raise TTSGenerationError("The generated audio could not be saved for OBS.") from exc
+def _send_local_audio_to_obs(
+    audio_path: Path,
+    obs_settings: tuple[str, int, str, str],
+) -> Path:
+    host, port, _, input_name = obs_settings
+    if not audio_path.is_file():
+        raise TTSGenerationError(f"Audio file does not exist: {audio_path.name}.")
 
     try:
         from obsws_python.error import (
@@ -255,7 +284,6 @@ def send_audio_to_obs(audio_url: str) -> Path:
                     "local_file": _get_obs_local_file_path(audio_path, obs_platform),
                 },
                 overlay=True,
-                
             )
             _start_media_playback(client, input_name)
     except (OSError, WebSocketTimeoutException, OBSSDKTimeoutError) as exc:
@@ -278,3 +306,184 @@ def send_audio_to_obs(audio_url: str) -> Path:
         ) from exc
 
     return audio_path
+
+
+def send_local_audio_to_obs(audio_path: Path) -> Path:
+    """Play an existing local audio file through the configured OBS media source."""
+    try:
+        audio_path = audio_path.resolve(strict=True)
+    except OSError as exc:
+        raise TTSGenerationError(
+            f"Audio file does not exist: {audio_path.name}."
+        ) from exc
+
+    return _send_local_audio_to_obs(audio_path, _load_obs_settings())
+
+
+def send_audio_to_obs(audio_url: str) -> Path:
+    obs_settings = _load_obs_settings()
+    try:
+        AUDIO_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise TTSGenerationError("The generated audio could not be saved for OBS.") from exc
+
+    audio_path = _download_audio_file(
+        audio_url, AUDIO_DIRECTORY, uuid.uuid4().hex, "generated audio"
+    )
+    sent_audio_path = _send_local_audio_to_obs(audio_path, obs_settings)
+    _schedule_audio_file_cleanup(sent_audio_path)
+    return sent_audio_path
+
+
+def _download_audio_file(
+    audio_url: str, directory: Path, filename: str, description: str
+) -> Path:
+    try:
+        with requests.get(audio_url, stream=True, timeout=30) as response:
+            response.raise_for_status()
+            content_type = (
+                response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+            )
+            extension_by_type = {
+                "audio/aac": ".aac",
+                "audio/flac": ".flac",
+                "audio/m4a": ".m4a",
+                "audio/mpeg": ".mp3",
+                "audio/ogg": ".ogg",
+                "audio/wav": ".wav",
+                "audio/x-wav": ".wav",
+            }
+            url_extension = Path(urlparse(audio_url).path).suffix.lower()
+            extension = extension_by_type.get(content_type, url_extension)
+            if extension not in {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}:
+                extension = ".wav"
+
+            audio_path = directory / f"{filename}{extension}"
+            with audio_path.open("wb") as audio_file:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        audio_file.write(chunk)
+    except requests.RequestException as exc:
+        raise TTSGenerationError(
+            f"The {description} could not be downloaded."
+        ) from exc
+    except OSError as exc:
+        raise TTSGenerationError(f"The {description} could not be saved.") from exc
+
+    return audio_path
+
+
+def _compile_audio_files(audio_paths: list[Path], output_path: Path) -> Path:
+    if not audio_paths:
+        raise TTSGenerationError("There is no audio to combine.")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise TTSGenerationError(
+            "FFmpeg is required to combine message audio. Install FFmpeg and ensure "
+            "it is available on PATH."
+        )
+
+    filter_parts = []
+    concat_inputs = []
+    for index in range(len(audio_paths)):
+        filter_parts.append(
+            f"[{index}:a:0]loudnorm=I=-16:TP=-1.5:LRA=11,"
+            "aresample=44100,"
+            f"aformat=sample_fmts=s16:channel_layouts=stereo[a{index}]"
+        )
+        concat_inputs.append(f"[a{index}]")
+    filter_parts.append(
+        f"{''.join(concat_inputs)}concat=n={len(audio_paths)}:v=0:a=1[out]"
+    )
+
+    command = [ffmpeg, "-y"]
+    for audio_path in audio_paths:
+        command.extend(["-i", str(audio_path)])
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[out]",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise TTSGenerationError(
+            "FFmpeg could not be started. Install FFmpeg and ensure it is on PATH."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TTSGenerationError("Combining the message audio timed out.") from exc
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or "").strip()
+        if details:
+            details = details[-1000:]
+            raise TTSGenerationError(
+                f"FFmpeg could not combine the message audio: {details}"
+            ) from exc
+        raise TTSGenerationError("FFmpeg could not combine the message audio.") from exc
+    except OSError as exc:
+        raise TTSGenerationError("The combined audio file could not be saved.") from exc
+
+    return output_path
+
+
+def send_audio_sequence_to_obs(audio_sequence: list[str | Path]) -> Path:
+    if not audio_sequence:
+        raise TTSGenerationError("There is no audio to combine.")
+
+    obs_settings = _load_obs_settings()
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        audio_paths = []
+        for index, segment in enumerate(audio_sequence):
+            if isinstance(segment, Path):
+                try:
+                    audio_path = segment.resolve(strict=True)
+                except OSError as exc:
+                    raise TTSGenerationError(
+                        f"Audio file does not exist: {segment.name}."
+                    ) from exc
+                audio_paths.append(audio_path)
+            else:
+                audio_paths.append(
+                    _download_audio_file(
+                        segment,
+                        temporary_path,
+                        f"segment_{index}",
+                        "generated audio segment",
+                    )
+                )
+
+        try:
+            AUDIO_DIRECTORY.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise TTSGenerationError(
+                "The combined audio directory could not be created."
+            ) from exc
+
+        output_path = AUDIO_DIRECTORY / f"{uuid.uuid4().hex}.wav"
+        try:
+            _compile_audio_files(audio_paths, output_path)
+        except TTSGenerationError:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Failed to remove incomplete audio file %s", output_path)
+            raise
+
+    sent_audio_path = _send_local_audio_to_obs(output_path, obs_settings)
+    _schedule_audio_file_cleanup(sent_audio_path)
+    return sent_audio_path
