@@ -20,6 +20,6 @@ from listings import views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('listings/', views.index, name='listings'),
+    path('message/', views.index, name='listings'),
 
 ]

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_clip_queue(request):
+    """Lit la file d'attente en session et la normalise pour l'affichage HTML."""
     queued_clips = request.session.get("clip_queue", [])
     normalized_queue = []
     for clip in queued_clips:
@@ -37,16 +38,19 @@ def _get_clip_queue(request):
 
 
 def _clip_key(message: str) -> str:
+    """Crée un identifiant stable pour comparer deux messages identiques entre eux."""
     normalized_message = " ".join(message.strip().split())
     return hashlib.sha256(normalized_message.casefold().encode("utf-8")).hexdigest()
 
 
 def _clip_already_played(request, message: str) -> bool:
+    """Retourne vrai si ce message a déjà été envoyé à OBS dans la session actuelle."""
     queue = _get_clip_queue(request)
     return any(item["clip_key"] == _clip_key(message) and item["played"] for item in queue)
 
 
 def _queue_clip(request, message: str) -> None:
+    """Ajoute un message à la file d'attente et le marque comme déjà joué."""
     clip_key = _clip_key(message)
     queue = _get_clip_queue(request)
     queued_entry = next((item for item in queue if item["clip_key"] == clip_key), None)
@@ -64,6 +68,7 @@ def _queue_clip(request, message: str) -> None:
 
 
 def index(request):
+    """Affiche le formulaire et envoie le texte ou les balises vers OBS si les données sont valides."""
     audio_url = None
     error = None
     clip_queue = _get_clip_queue(request)
@@ -105,6 +110,7 @@ def _send_message_with_tags(
     sound_bite_tags: dict[str, Path],
     voice_tags: dict[str, str],
 ) -> None:
+    """Construit une séquence audio en mixant du texte, des sons et des changements de voix."""
     audio_sequence: list[str | Path] = []
     position = 0
     voice_id = VOICE_ID

@@ -30,6 +30,8 @@ VOICE_CHOICES = [
 
 
 class PromptForm(forms.Form):
+    """Formulaire qui reçoit le message texte et transforme les balises en actions audio."""
+
     message = forms.CharField(
         label="Message",
         max_length=1000,
@@ -37,6 +39,7 @@ class PromptForm(forms.Form):
     )
 
     def __init__(self, *args, **kwargs):
+        """Charge les sons disponibles et affiche les balises utilisables dans le formulaire."""
         super().__init__(*args, **kwargs)
         SOUND_BITE_DIRECTORY.mkdir(parents=True, exist_ok=True)
         self.sound_bites: list[Path] = sorted(
@@ -79,6 +82,7 @@ class PromptForm(forms.Form):
         )
 
     def clean(self):
+        """Vérifie chaque balise, valide le message et prépare les sons/voix à utiliser."""
         cleaned_data = super().clean()
         message = cleaned_data.get("message", "")
         self.sound_bite_tags: dict[str, Path] = {}
