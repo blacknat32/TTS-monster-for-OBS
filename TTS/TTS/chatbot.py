@@ -1,4 +1,5 @@
 import atexit
+import errno
 import logging
 import os
 import shutil
@@ -9,6 +10,7 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
+from pathlib import PureWindowsPath
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,6 +22,7 @@ VOICE_ID = "faa92dd8-0517-49da-8f01-1fb03f0e0096"
 OBS_CONFIG_PATH = Path(__file__).with_name("config file")
 AUDIO_DIRECTORY = Path(__file__).resolve().parent.parent / "media" / "tts"
 AUDIO_CLEANUP_DELAY_SECONDS = 5 * 60
+AUDIO_CLEANUP_RETRY_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 _obs_lock = threading.RLock()
@@ -156,16 +159,92 @@ def _get_obs_local_file_path(audio_path: Path, obs_platform: str) -> str:
     return local_file
 
 
+def _get_previous_generated_audio_path(
+    obs_local_file: str, obs_platform: str
+) -> Path | None:
+    if obs_platform.lower() == "windows" and os.name != "nt":
+        if PureWindowsPath(obs_local_file).is_absolute():
+            try:
+                result = subprocess.run(
+                    ["wslpath", "-u", obs_local_file],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                logger.warning(
+                    "Unable to resolve the previous OBS audio path for cleanup: %s",
+                    exc,
+                )
+                return None
+            obs_local_file = result.stdout.strip()
+            if not obs_local_file:
+                logger.warning(
+                    "wslpath returned an empty path for the previous OBS audio file."
+                )
+                return None
+
+    try:
+        previous_path = Path(obs_local_file).resolve(strict=True)
+        audio_directory = AUDIO_DIRECTORY.resolve(strict=True)
+    except OSError:
+        return None
+
+    if previous_path.parent != audio_directory:
+        return None
+    return previous_path
+
+
+def _delete_replaced_generated_audio(
+    previous_settings: Any,
+    new_audio_path: Path,
+    obs_platform: str,
+) -> None:
+    input_settings = getattr(previous_settings, "input_settings", None)
+    if not isinstance(input_settings, dict):
+        return
+    previous_local_file = input_settings.get("local_file")
+    if input_settings.get("is_local_file") is not True or not isinstance(
+        previous_local_file, str
+    ):
+        return
+
+    previous_audio_path = _get_previous_generated_audio_path(
+        previous_local_file, obs_platform
+    )
+    if previous_audio_path is None or previous_audio_path == new_audio_path.resolve():
+        return
+
+    _delete_audio_file(previous_audio_path)
+
+
 def _delete_audio_file(audio_path: Path) -> None:
     try:
         audio_path.unlink(missing_ok=True)
-    except OSError:
-        logger.exception("Failed to delete generated audio file %s", audio_path)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EBUSY, errno.EPERM} or getattr(
+            exc, "winerror", None
+        ) in {5, 32, 33}:
+            logger.warning(
+                "Generated audio file %s is temporarily unavailable for deletion; "
+                "retrying in %s seconds: %s",
+                audio_path,
+                AUDIO_CLEANUP_RETRY_SECONDS,
+                exc,
+            )
+            _schedule_audio_file_cleanup(
+                audio_path, delay_seconds=AUDIO_CLEANUP_RETRY_SECONDS
+            )
+        else:
+            logger.exception("Failed to delete generated audio file %s", audio_path)
 
 
-def _schedule_audio_file_cleanup(audio_path: Path) -> None:
+def _schedule_audio_file_cleanup(
+    audio_path: Path, delay_seconds: int = AUDIO_CLEANUP_DELAY_SECONDS
+) -> None:
     cleanup_timer = threading.Timer(
-        AUDIO_CLEANUP_DELAY_SECONDS, _delete_audio_file, args=(audio_path,)
+        delay_seconds, _delete_audio_file, args=(audio_path,)
     )
     cleanup_timer.daemon = True
     cleanup_timer.start()
@@ -277,6 +356,7 @@ def _send_local_audio_to_obs(
                     "OBS WebSocket connection was not established."
                 )
             obs_platform = client.get_version().platform
+            previous_settings = client.get_input_settings(input_name)
             client.set_input_settings(
                 input_name,
                 {
@@ -284,6 +364,9 @@ def _send_local_audio_to_obs(
                     "local_file": _get_obs_local_file_path(audio_path, obs_platform),
                 },
                 overlay=True,
+            )
+            _delete_replaced_generated_audio(
+                previous_settings, audio_path.resolve(), obs_platform
             )
             _start_media_playback(client, input_name)
     except (OSError, WebSocketTimeoutException, OBSSDKTimeoutError) as exc:
