@@ -51,6 +51,9 @@ be used multiple times. The complete sequence is combined into one WAV file
 before it is sent to OBS. Install FFmpeg and make sure the `ffmpeg` command is
 available on PATH. Each speech and sound segment is loudness-normalized to -16
 LUFS during compilation so sound bites play at a volume closer to the TTS.
+Generated clips are removed when OBS accepts a replacement file path, or after
+five minutes if they have not been replaced. Files in `Sound_Bites` are never
+deleted automatically.
 
 
 Si tu lis ce message. c'est que tu squatte mon ordi. PAS BIEN PAS BIENBebou je t'aime.

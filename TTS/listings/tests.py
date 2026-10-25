@@ -1,3 +1,4 @@
+import errno
 import math
 import shutil
 import unittest
@@ -16,10 +17,14 @@ from TTS.chatbot import (
     TTSGenerationError,
     VOICE_ID,
     AUDIO_CLEANUP_DELAY_SECONDS,
+    AUDIO_CLEANUP_RETRY_SECONDS,
     _compile_audio_files,
     _delete_audio_file,
+    _delete_replaced_generated_audio,
     _get_obs_local_file_path,
+    _get_previous_generated_audio_path,
     _schedule_audio_file_cleanup,
+    _send_local_audio_to_obs,
     _start_media_playback,
     send_audio_sequence_to_obs,
     send_audio_to_obs,
@@ -53,6 +58,15 @@ class TTSFormTests(TestCase):
         self.assertContains(response, "{Adam}")
         self.assertContains(response, "<strong>Balises voix :</strong>")
         self.assertContains(response, "<strong>Balises audio :</strong>")
+        self.assertContains(
+            response,
+            'type="button" class="tag-button" data-tag="{Adam}"',
+        )
+        self.assertContains(
+            response,
+            'type="button" class="tag-button" data-tag="{bruh}"',
+        )
+        self.assertContains(response, "listings/prompt-tags.js")
         self.assertNotContains(response, '<select name="sound_bite"')
         self.assertNotContains(response, '<select name="voice_id"')
 
@@ -208,8 +222,143 @@ class TTSFormTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "OBS service is unavailable.")
 
+    @patch("listings.views.send_audio_to_obs")
+    @patch("listings.views.url_tts")
+    def test_duplicate_clip_is_skipped_before_sending_to_obs(self, generate_audio, send_to_obs):
+        generate_audio.return_value = "https://example.com/generated.wav"
+
+        first_response = self.client.post("/listings/", {"message": "Bonjour"})
+        second_response = self.client.post("/listings/", {"message": "Bonjour"})
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(send_to_obs.call_count, 1)
+        self.assertContains(second_response, "Ce clip a déjà été joué.")
+        self.assertContains(second_response, "File d'attente")
+        self.assertContains(second_response, "Bonjour")
+
 
 class OBSPlaybackTests(TestCase):
+    def test_replacing_obs_path_deletes_old_generated_audio_after_update(self):
+        with TemporaryDirectory() as directory:
+            audio_directory = Path(directory) / "tts"
+            audio_directory.mkdir()
+            old_audio = audio_directory / "old.wav"
+            new_audio = audio_directory / "new.wav"
+            old_audio.touch()
+            new_audio.touch()
+            client = MagicMock()
+            client.get_version.return_value = SimpleNamespace(platform="linux")
+            client.get_input_settings.return_value = SimpleNamespace(
+                input_settings={
+                    "is_local_file": True,
+                    "local_file": str(old_audio),
+                }
+            )
+            client.set_input_settings.side_effect = lambda *args, **kwargs: (
+                self.assertTrue(old_audio.exists())
+            )
+
+            with (
+                patch("TTS.chatbot.AUDIO_DIRECTORY", audio_directory),
+                patch("TTS.chatbot._obs_client", client),
+                patch("TTS.chatbot.connect_to_obs"),
+                patch("TTS.chatbot._start_media_playback"),
+            ):
+                _send_local_audio_to_obs(
+                    new_audio, ("localhost", 4455, "", "TTS Audio")
+                )
+
+            self.assertFalse(old_audio.exists())
+            client.set_input_settings.assert_called_once()
+
+    def test_failed_obs_path_update_keeps_old_generated_audio(self):
+        with TemporaryDirectory() as directory:
+            audio_directory = Path(directory) / "tts"
+            audio_directory.mkdir()
+            old_audio = audio_directory / "old.wav"
+            new_audio = audio_directory / "new.wav"
+            old_audio.touch()
+            new_audio.touch()
+            client = MagicMock()
+            client.get_version.return_value = SimpleNamespace(platform="linux")
+            client.get_input_settings.return_value = SimpleNamespace(
+                input_settings={
+                    "is_local_file": True,
+                    "local_file": str(old_audio),
+                }
+            )
+            client.set_input_settings.side_effect = OSError("OBS unavailable")
+
+            with (
+                patch("TTS.chatbot.AUDIO_DIRECTORY", audio_directory),
+                patch("TTS.chatbot._obs_client", client),
+                patch("TTS.chatbot.connect_to_obs"),
+                patch("TTS.chatbot.disconnect_from_obs"),
+                patch("TTS.chatbot._delete_audio_file") as delete_audio,
+            ):
+                with self.assertRaisesRegex(TTSGenerationError, "Cannot connect to OBS"):
+                    _send_local_audio_to_obs(
+                        new_audio, ("localhost", 4455, "", "TTS Audio")
+                    )
+
+            self.assertTrue(old_audio.exists())
+            delete_audio.assert_not_called()
+
+    def test_replaced_generated_audio_is_deleted_but_sound_bites_are_preserved(self):
+        with TemporaryDirectory() as directory:
+            audio_directory = Path(directory) / "tts"
+            audio_directory.mkdir()
+            old_audio = audio_directory / "old.wav"
+            new_audio = audio_directory / "new.wav"
+            old_audio.touch()
+            new_audio.touch()
+            sound_bite = Path(directory) / "Sound_Bites" / "bruh.mp3"
+            sound_bite.parent.mkdir()
+            sound_bite.touch()
+
+            with patch("TTS.chatbot.AUDIO_DIRECTORY", audio_directory):
+                _delete_replaced_generated_audio(
+                    SimpleNamespace(
+                        input_settings={
+                            "is_local_file": True,
+                            "local_file": str(old_audio),
+                        }
+                    ),
+                    new_audio,
+                    "linux",
+                )
+                _delete_replaced_generated_audio(
+                    SimpleNamespace(
+                        input_settings={
+                            "is_local_file": True,
+                            "local_file": str(sound_bite),
+                        }
+                    ),
+                    new_audio,
+                    "linux",
+                )
+
+            self.assertFalse(old_audio.exists())
+            self.assertTrue(new_audio.exists())
+            self.assertTrue(sound_bite.exists())
+
+    def test_previous_path_outside_generated_audio_directory_is_ignored(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio_directory = root / "tts"
+            audio_directory.mkdir()
+            unrelated_audio = root / "Sound_Bites" / "bruh.mp3"
+            unrelated_audio.parent.mkdir()
+            unrelated_audio.touch()
+
+            with patch("TTS.chatbot.AUDIO_DIRECTORY", audio_directory):
+                previous_path = _get_previous_generated_audio_path(
+                    str(unrelated_audio), "linux"
+                )
+
+            self.assertIsNone(previous_path)
+
     @patch("TTS.chatbot.threading.Timer")
     def test_generated_audio_cleanup_is_scheduled_after_five_minutes(self, timer):
         audio_path = Path("generated.wav")
@@ -233,6 +382,21 @@ class OBSPlaybackTests(TestCase):
             _delete_audio_file(audio_path)
 
             self.assertFalse(audio_path.exists())
+
+    @patch("TTS.chatbot.Path.unlink")
+    @patch("TTS.chatbot.threading.Timer")
+    def test_cleanup_retries_when_generated_file_is_locked(self, timer, unlink):
+        audio_path = Path("generated.wav")
+        unlink.side_effect = PermissionError(errno.EACCES, "file is in use")
+
+        _delete_audio_file(audio_path)
+
+        timer.assert_called_once_with(
+            AUDIO_CLEANUP_RETRY_SECONDS,
+            _delete_audio_file,
+            args=(audio_path,),
+        )
+        timer.return_value.start.assert_called_once_with()
 
     @patch.dict("os.environ", {"TTS_MONSTER_API_KEY": "test-key"})
     @patch("TTS.chatbot.requests.post")

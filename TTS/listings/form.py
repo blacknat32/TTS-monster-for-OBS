@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 from django import forms
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 
 from TTS.chatbot import VOICE_ID
 
@@ -55,11 +55,21 @@ class PromptForm(forms.Form):
         self.voices_by_tag: dict[str, str] = {
             label.casefold(): voice_id for voice_id, label in VOICE_CHOICES
         }
-        voice_tags = ", ".join(
-            f"{{{label}}}" for _, label in VOICE_CHOICES
+        voice_tags = format_html_join(
+            ", ",
+            '<button type="button" class="tag-button" data-tag="{}">{}</button>',
+            (
+                (f"{{{label}}}", f"{{{label}}}")
+                for _, label in VOICE_CHOICES
+            ),
         )
-        sound_tags = ", ".join(
-            f"{{{path.stem}}}" for path in self.sound_bites
+        sound_tags = format_html_join(
+            ", ",
+            '<button type="button" class="tag-button" data-tag="{}">{}</button>',
+            (
+                (f"{{{path.stem}}}", f"{{{path.stem}}}")
+                for path in self.sound_bites
+            ),
         ) or "Aucune"
         self.fields["message"].help_text = format_html(
             "<strong>Balises voix :</strong> {}<br>"
