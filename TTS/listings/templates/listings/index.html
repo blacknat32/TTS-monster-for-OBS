@@ -12,9 +12,30 @@
       <h1>Brain-Rot Simulator</h1>
       <form action="{% url 'listings' %}" method="post">
         {% csrf_token %}
-        {{ form.as_p }}
-        <button type="submit">Get Ear-Rape</button>
+        <div>
+          {{ form.message.errors }}
+          {{ form.message.label_tag }}
+          {{ form.message }}
+          <button type="submit">Envoyer</button>
+          {% if form.message.help_text %}
+            <div>{{ form.message.help_text }}</div>
+          {% endif %}
+        </div>
       </form>
+
+      {% if clip_queue %}
+        <section aria-label="File d'attente des clips">
+          <h2>File d'attente</h2>
+          <ul>
+            {% for clip in clip_queue %}
+              <li>
+                <span>{{ clip.label }}</span>
+                <span> — {{ clip.status }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
 
       {% if error %}
         <p role="alert">{{ error }}</p>
@@ -30,5 +51,6 @@
         </section>
       {% endif %}
     </main>
+    <script src="{% static 'listings/prompt-tags.js' %}" defer></script>
   </body>
 </html>
