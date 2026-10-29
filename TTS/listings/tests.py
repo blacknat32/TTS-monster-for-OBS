@@ -664,7 +664,9 @@ class OBSPlaybackTests(TestCase):
         audio_paths, output_path = compile_audio.call_args.args
         self.assertEqual(result, output_path)
         self.assertEqual(len(audio_paths), 2)
-        self.assertEqual(audio_paths[1], sound_bite)
+        # The sequence resolves sound paths; on Windows runners the temp
+        # directory has a short 8.3 alias (RUNNER~1) that resolve() expands.
+        self.assertEqual(audio_paths[1], sound_bite.resolve())
         self.assertEqual(output_path.suffix, ".wav")
         send_to_obs.assert_called_once_with(output_path, load_settings.return_value)
         schedule_cleanup.assert_called_once_with(output_path)
