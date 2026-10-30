@@ -1,6 +1,7 @@
 import errno
 import math
-import shutil
+import os
+import sys
 import unittest
 import wave
 from array import array
@@ -12,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from django.test import TestCase
+from django.urls import reverse
 
 from TTS.chatbot import (
     TTSGenerationError,
@@ -19,10 +21,13 @@ from TTS.chatbot import (
     AUDIO_CLEANUP_DELAY_SECONDS,
     AUDIO_CLEANUP_RETRY_SECONDS,
     _compile_audio_files,
+    _find_ffmpeg,
     _delete_audio_file,
     _delete_replaced_generated_audio,
+    _download_audio_file,
     _get_obs_local_file_path,
     _get_previous_generated_audio_path,
+    _load_obs_settings,
     _schedule_audio_file_cleanup,
     _send_local_audio_to_obs,
     _start_media_playback,
@@ -49,33 +54,25 @@ class TTSFormTests(TestCase):
         self.addCleanup(form_directory_patch.stop)
 
     def test_get_displays_message_form(self):
-        response = self.client.get("/listings/")
+        response = self.client.get(reverse("listings"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Message:")
         self.assertContains(response, 'name="message"')
         self.assertContains(response, "{bruh}")
         self.assertContains(response, "{Adam}")
-        self.assertContains(response, "<strong>Balises voix :</strong>")
-        self.assertContains(response, "<strong>Balises audio :</strong>")
+        self.assertContains(response, 'aria-label="Balises voix"')
+        self.assertContains(response, 'aria-label="Balises audio"')
         self.assertContains(
             response,
-            'type="button" class="tag-button" data-tag="{Adam}"',
+            'type="button" class="tag-button chip chip-voice" data-tag="{Adam}"',
         )
         self.assertContains(
             response,
-            'type="button" class="tag-button" data-tag="{bruh}"',
+            'type="button" class="tag-button chip chip-sound" data-tag="{bruh}"',
         )
+        self.assertNotContains(response, 'data-tag="{notes}"')
         self.assertContains(response, "listings/prompt-tags.js")
-        self.assertNotContains(response, '<select name="sound_bite"')
-        self.assertNotContains(response, '<select name="voice_id"')
-
-    def test_get_displays_available_sound_tags_without_selector(self):
-        response = self.client.get("/listings/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "{bruh}")
-        self.assertNotContains(response, '<select name="sound_bite"')
 
     @patch("listings.views.send_audio_to_obs")
     @patch("listings.views.url_tts")
@@ -85,7 +82,7 @@ class TTSFormTests(TestCase):
         generate_audio.return_value = "https://example.com/generated.wav"
 
         response = self.client.post(
-            "/listings/", {"message": "Bonjour"}
+            reverse("listings"), {"message": "Bonjour"}
         )
 
         self.assertEqual(response.status_code, 200)
@@ -104,7 +101,7 @@ class TTSFormTests(TestCase):
         ]
 
         response = self.client.post(
-            "/listings/",
+            reverse("listings"),
             {
                 "message": "Before {bruh} after {wasted}",
             },
@@ -133,7 +130,7 @@ class TTSFormTests(TestCase):
         self, send_sequence_to_obs, generate_audio
     ):
         response = self.client.post(
-            "/listings/",
+            reverse("listings"),
             {"message": "{bruh}"},
         )
 
@@ -155,7 +152,7 @@ class TTSFormTests(TestCase):
         ]
 
         response = self.client.post(
-            "/listings/",
+            reverse("listings"),
             {"message": "Default {Adam}Adam speaks {Brian}Brian speaks"},
         )
 
@@ -178,7 +175,7 @@ class TTSFormTests(TestCase):
 
     def test_unknown_tag_is_rejected(self):
         response = self.client.post(
-            "/listings/",
+            reverse("listings"),
             {"message": "Before {not_a_sound} after"},
         )
 
@@ -189,7 +186,7 @@ class TTSFormTests(TestCase):
     @patch("listings.views.url_tts")
     def test_invalid_post_does_not_generate_audio(self, generate_audio, send_to_obs):
         response = self.client.post(
-            "/listings/", {"message": ""}
+            reverse("listings"), {"message": ""}
         )
 
         self.assertEqual(response.status_code, 200)
@@ -200,23 +197,18 @@ class TTSFormTests(TestCase):
     def test_form_lists_voice_and_audio_tags_separately(self):
         form = PromptForm()
 
-        self.assertIn("{bruh}", str(form["message"].help_text))
-        self.assertIn("{wasted}", str(form["message"].help_text))
-        self.assertIn("{Adam}", str(form["message"].help_text))
-        self.assertIn("Balises voix", str(form["message"].help_text))
-        self.assertIn("Balises audio", str(form["message"].help_text))
-        self.assertNotIn("notes", str(form["message"].help_text))
+        self.assertEqual(form.sound_bite_names, ["bruh", "wasted"])
+        self.assertIn("Adam", form.voice_labels)
+        self.assertNotIn("bruh", form.voice_labels)
 
     @patch("listings.views.send_audio_to_obs")
     @patch("listings.views.url_tts")
     def test_obs_error_is_displayed(self, generate_audio, send_to_obs):
-        from TTS.chatbot import TTSGenerationError
-
         generate_audio.return_value = "https://example.com/generated.wav"
         send_to_obs.side_effect = TTSGenerationError("OBS service is unavailable.")
 
         response = self.client.post(
-            "/listings/", {"message": "Bonjour"}
+            reverse("listings"), {"message": "Bonjour"}
         )
 
         self.assertEqual(response.status_code, 200)
@@ -227,8 +219,8 @@ class TTSFormTests(TestCase):
     def test_duplicate_clip_is_skipped_before_sending_to_obs(self, generate_audio, send_to_obs):
         generate_audio.return_value = "https://example.com/generated.wav"
 
-        first_response = self.client.post("/listings/", {"message": "Bonjour"})
-        second_response = self.client.post("/listings/", {"message": "Bonjour"})
+        first_response = self.client.post(reverse("listings"), {"message": "Bonjour"})
+        second_response = self.client.post(reverse("listings"), {"message": "Bonjour"})
 
         self.assertEqual(first_response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
@@ -236,6 +228,103 @@ class TTSFormTests(TestCase):
         self.assertContains(second_response, "Ce clip a déjà été joué.")
         self.assertContains(second_response, "File d'attente")
         self.assertContains(second_response, "Bonjour")
+
+    @patch("listings.views.send_audio_sequence_to_obs")
+    @patch("listings.views.url_tts")
+    def test_tags_are_case_insensitive(self, generate_audio, send_sequence_to_obs):
+        generate_audio.return_value = "https://example.com/adam.wav"
+
+        response = self.client.post(reverse("listings"), {"message": "{BRUH} {adam}Salut"})
+
+        self.assertEqual(response.status_code, 200)
+        generate_audio.assert_called_once_with(
+            "Salut", "c4ad44ae-8da9-4375-90c0-55a1e6f1fbc6"
+        )
+        send_sequence_to_obs.assert_called_once_with(
+            [self.sound_bite_directory / "bruh.mp3", "https://example.com/adam.wav"]
+        )
+
+    def test_sound_named_like_a_voice_is_rejected(self):
+        (self.sound_bite_directory / "Adam.mp3").touch()
+
+        form = PromptForm(data={"message": "Salut {Adam}"})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("à la fois à un son et à une voix", str(form.errors))
+
+    def test_sound_names_shared_by_several_files_are_rejected(self):
+        (self.sound_bite_directory / "bruh.wav").touch()
+
+        form = PromptForm(data={"message": "Salut {bruh}"})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("correspond à plusieurs sons", str(form.errors))
+
+    def test_message_with_only_voice_tags_is_rejected(self):
+        form = PromptForm(data={"message": "{Adam} {Brian}"})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("Ajoutez du texte ou une balise de son.", str(form.errors))
+
+    @patch("listings.views.url_tts")
+    def test_message_longer_than_limit_is_rejected(self, generate_audio):
+        response = self.client.post(reverse("listings"), {"message": "a" * 1001})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "at most 1000 characters")
+        generate_audio.assert_not_called()
+
+    @patch("listings.views.send_audio_to_obs")
+    @patch("listings.views.url_tts")
+    def test_duplicate_detection_ignores_case_and_extra_spaces(
+        self, generate_audio, send_to_obs
+    ):
+        generate_audio.return_value = "https://example.com/generated.wav"
+
+        self.client.post(reverse("listings"), {"message": "Bonjour le chat"})
+        response = self.client.post(
+            reverse("listings"), {"message": "  bonjour   LE chat "}
+        )
+
+        self.assertEqual(send_to_obs.call_count, 1)
+        self.assertContains(response, "Ce clip a déjà été joué.")
+
+    @patch("listings.views.send_audio_to_obs")
+    @patch("listings.views.url_tts")
+    def test_failed_clip_is_not_marked_as_played(self, generate_audio, send_to_obs):
+        generate_audio.return_value = "https://example.com/generated.wav"
+        send_to_obs.side_effect = [TTSGenerationError("OBS is closed."), None]
+
+        first_response = self.client.post(reverse("listings"), {"message": "Bonjour"})
+        second_response = self.client.post(reverse("listings"), {"message": "Bonjour"})
+
+        self.assertContains(first_response, "OBS is closed.")
+        self.assertEqual(send_to_obs.call_count, 2)
+        self.assertNotContains(second_response, "Ce clip a déjà été joué.")
+
+    @patch("listings.views.send_audio_sequence_to_obs")
+    @patch("listings.views.url_tts")
+    def test_tagged_message_error_is_displayed(self, generate_audio, send_sequence_to_obs):
+        generate_audio.return_value = "https://example.com/generated.wav"
+        send_sequence_to_obs.side_effect = TTSGenerationError("FFmpeg failed.")
+
+        response = self.client.post(reverse("listings"), {"message": "Salut {bruh}"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "FFmpeg failed.")
+
+    @patch("listings.views.send_audio_to_obs")
+    @patch("listings.views.url_tts")
+    def test_queue_keeps_only_the_ten_latest_clips(self, generate_audio, send_to_obs):
+        generate_audio.return_value = "https://example.com/generated.wav"
+
+        for index in range(12):
+            self.client.post(reverse("listings"), {"message": f"Message {index}"})
+
+        queue = self.client.session["clip_queue"]
+        self.assertEqual(len(queue), 10)
+        self.assertEqual(queue[0]["label"], "Message 11")
+        self.assertEqual(queue[-1]["label"], "Message 2")
 
 
 class OBSPlaybackTests(TestCase):
@@ -496,7 +585,7 @@ class OBSPlaybackTests(TestCase):
         with self.assertRaisesRegex(TTSGenerationError, "did not start playback"):
             _start_media_playback(FakeOBSClient(), "TTS Audio")
 
-    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
+    @unittest.skipUnless(_find_ffmpeg(), "FFmpeg is not installed")
     def test_compile_audio_files_concatenates_different_wav_formats(self):
         with TemporaryDirectory() as directory:
             working_directory = Path(directory)
@@ -513,7 +602,7 @@ class OBSPlaybackTests(TestCase):
                 self.assertEqual(combined.getnchannels(), 2)
                 self.assertAlmostEqual(combined.getnframes() / 44100, 0.3, delta=0.02)
 
-    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
+    @unittest.skipUnless(_find_ffmpeg(), "FFmpeg is not installed")
     def test_compile_audio_files_normalizes_each_segment_to_similar_volume(self):
         with TemporaryDirectory() as directory:
             working_directory = Path(directory)
@@ -575,7 +664,9 @@ class OBSPlaybackTests(TestCase):
         audio_paths, output_path = compile_audio.call_args.args
         self.assertEqual(result, output_path)
         self.assertEqual(len(audio_paths), 2)
-        self.assertEqual(audio_paths[1], sound_bite)
+        # The sequence resolves sound paths; on Windows runners the temp
+        # directory has a short 8.3 alias (RUNNER~1) that resolve() expands.
+        self.assertEqual(audio_paths[1], sound_bite.resolve())
         self.assertEqual(output_path.suffix, ".wav")
         send_to_obs.assert_called_once_with(output_path, load_settings.return_value)
         schedule_cleanup.assert_called_once_with(output_path)
@@ -627,3 +718,186 @@ class OBSPlaybackTests(TestCase):
     @staticmethod
     def _rms(samples):
         return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+    def test_obs_receives_local_file_flag_and_path(self):
+        with TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "new.wav"
+            audio_path.touch()
+            client = MagicMock()
+            client.get_version.return_value = SimpleNamespace(platform="linux")
+
+            with (
+                patch("TTS.chatbot._obs_client", client),
+                patch("TTS.chatbot.connect_to_obs"),
+                patch("TTS.chatbot._start_media_playback"),
+            ):
+                _send_local_audio_to_obs(
+                    audio_path, ("localhost", 4455, "", "TTS Audio")
+                )
+
+            # Sans "is_local_file", OBS ignore le chemin et reste à 00:00.
+            client.set_input_settings.assert_called_once_with(
+                "TTS Audio",
+                {
+                    "is_local_file": True,
+                    "local_file": audio_path.resolve().as_posix(),
+                },
+                overlay=True,
+            )
+
+
+class TTSMonsterAPITests(TestCase):
+    def test_missing_api_key_is_reported_without_calling_the_api(self):
+        with (
+            patch.dict(os.environ),
+            patch("TTS.chatbot.requests.post") as post,
+        ):
+            os.environ.pop("TTS_MONSTER_API_KEY", None)
+            with self.assertRaisesRegex(TTSGenerationError, "TTS_MONSTER_API_KEY"):
+                url_tts("Bonjour")
+
+        post.assert_not_called()
+
+    @patch.dict("os.environ", {"TTS_MONSTER_API_KEY": "test-key"})
+    @patch("TTS.chatbot.requests.post")
+    def test_rejected_request_reports_status_and_api_detail(self, post):
+        response = requests.Response()
+        response.status_code = 401
+        response._content = b'{"detail": "Invalid API key"}'
+        post.return_value.raise_for_status.side_effect = requests.HTTPError(
+            response=response
+        )
+
+        with self.assertRaisesRegex(
+            TTSGenerationError,
+            "rejected the request with HTTP 401.*API detail: Invalid API key",
+        ):
+            url_tts("Bonjour")
+
+    @patch.dict("os.environ", {"TTS_MONSTER_API_KEY": "test-key"})
+    @patch("TTS.chatbot.requests.post")
+    def test_network_error_is_reported(self, post):
+        post.side_effect = requests.ConnectionError("no network")
+
+        with self.assertRaisesRegex(TTSGenerationError, "request failed"):
+            url_tts("Bonjour")
+
+    @patch.dict("os.environ", {"TTS_MONSTER_API_KEY": "test-key"})
+    @patch("TTS.chatbot.requests.post")
+    def test_response_without_audio_url_is_reported(self, post):
+        post.return_value.json.return_value = {"status": "ok"}
+
+        with self.assertRaisesRegex(TTSGenerationError, "did not include an audio URL"):
+            url_tts("Bonjour")
+
+
+class OBSSettingsTests(TestCase):
+    def _load(self, content):
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config file"
+            config_path.write_text(content, encoding="utf-8")
+            with patch("TTS.chatbot.OBS_CONFIG_PATH", config_path):
+                return _load_obs_settings()
+
+    def test_valid_config_is_loaded(self):
+        settings = self._load(
+            '[connection]\nhost = "localhost"\nport = 4455\npassword = "secret"\n'
+            '[audio]\ninput_name = "TTS Audio"\n'
+        )
+
+        self.assertEqual(settings, ("localhost", 4455, "secret", "TTS Audio"))
+
+    def test_placeholder_password_means_no_password(self):
+        settings = self._load(
+            '[connection]\nhost = "localhost"\nport = 4455\npassword = "None"\n'
+            '[audio]\ninput_name = "TTS Audio"\n'
+        )
+
+        self.assertEqual(settings[2], "")
+
+    def test_incomplete_config_is_reported(self):
+        with self.assertRaisesRegex(TTSGenerationError, "missing or invalid"):
+            self._load('[connection]\nhost = "localhost"\n')
+
+    def test_missing_config_file_is_reported(self):
+        with (
+            TemporaryDirectory() as directory,
+            patch("TTS.chatbot.OBS_CONFIG_PATH", Path(directory) / "config file"),
+        ):
+            with self.assertRaisesRegex(TTSGenerationError, "missing or invalid"):
+                _load_obs_settings()
+
+
+class AudioFileTests(TestCase):
+    def _download(self, audio_url, content_type):
+        response = MagicMock()
+        response.headers = {"Content-Type": content_type}
+        response.iter_content.return_value = [b"audio-bytes"]
+        with (
+            TemporaryDirectory() as directory,
+            patch("TTS.chatbot.requests.get") as get_audio,
+        ):
+            get_audio.return_value.__enter__.return_value = response
+            audio_path = _download_audio_file(
+                audio_url, Path(directory), "clip", "test audio"
+            )
+            return audio_path.name, audio_path.read_bytes()
+
+    def test_download_uses_extension_from_content_type(self):
+        name, content = self._download("https://example.com/clip", "audio/mpeg")
+
+        self.assertEqual(name, "clip.mp3")
+        self.assertEqual(content, b"audio-bytes")
+
+    def test_download_falls_back_to_wav_for_unknown_types(self):
+        name, _ = self._download("https://example.com/clip", "application/octet-stream")
+
+        self.assertEqual(name, "clip.wav")
+
+    def test_ffmpeg_on_path_is_preferred(self):
+        with patch("TTS.chatbot.shutil.which", return_value="C:/tools/ffmpeg.exe"):
+            self.assertEqual(_find_ffmpeg(), "C:/tools/ffmpeg.exe")
+
+    def test_bundled_ffmpeg_is_used_when_none_is_on_path(self):
+        bundled = SimpleNamespace(get_ffmpeg_exe=lambda: "bundled-ffmpeg")
+        with (
+            patch("TTS.chatbot.shutil.which", return_value=None),
+            patch.dict(sys.modules, {"imageio_ffmpeg": bundled}),
+        ):
+            self.assertEqual(_find_ffmpeg(), "bundled-ffmpeg")
+
+    def test_missing_ffmpeg_is_reported(self):
+        with (
+            patch("TTS.chatbot.shutil.which", return_value=None),
+            patch.dict(sys.modules, {"imageio_ffmpeg": None}),
+        ):
+            self.assertIsNone(_find_ffmpeg())
+            with self.assertRaisesRegex(TTSGenerationError, "FFmpeg is required"):
+                _compile_audio_files([Path("a.wav")], Path("out.wav"))
+
+    @patch("TTS.chatbot._send_local_audio_to_obs")
+    @patch("TTS.chatbot._load_obs_settings")
+    def test_failed_compilation_removes_partial_file_and_skips_obs(
+        self, load_settings, send_to_obs
+    ):
+        load_settings.return_value = ("localhost", 4455, "", "TTS Audio")
+
+        def fail_after_writing(audio_paths, output_path):
+            output_path.write_bytes(b"partial")
+            raise TTSGenerationError("FFmpeg crashed.")
+
+        with (
+            TemporaryDirectory() as sound_directory,
+            TemporaryDirectory() as output_directory,
+        ):
+            sound_bite = Path(sound_directory) / "bruh.mp3"
+            sound_bite.touch()
+            with (
+                patch("TTS.chatbot.AUDIO_DIRECTORY", Path(output_directory)),
+                patch("TTS.chatbot._compile_audio_files", fail_after_writing),
+            ):
+                with self.assertRaisesRegex(TTSGenerationError, "FFmpeg crashed."):
+                    send_audio_sequence_to_obs([sound_bite])
+
+            self.assertEqual(list(Path(output_directory).iterdir()), [])
+        send_to_obs.assert_not_called()

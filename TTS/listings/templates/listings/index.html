@@ -9,45 +9,80 @@
   </head>
   <body>
     <main>
-      <h1>Brain-Rot Simulator</h1>
-      <form action="{% url 'listings' %}" method="post">
+      <header class="page-header">
+        <h1>Brain-Rot <span>Simulator</span></h1>
+        <p class="subtitle">Écris, choisis une voix, ajoute des sons — et envoie direct sur OBS.</p>
+      </header>
+
+      {% if error %}
+        <p class="card alert" role="alert">{{ error }}</p>
+      {% endif %}
+
+      <form class="card" action="{% url 'listings' %}" method="post">
         {% csrf_token %}
-        <div>
-          {{ form.message.errors }}
+        <div class="card-title">
           {{ form.message.label_tag }}
-          {{ form.message }}
-          <button type="submit">Envoyer</button>
-          {% if form.message.help_text %}
-            <div>{{ form.message.help_text }}</div>
-          {% endif %}
+          <small>Clique sur une voix ou un son pour l'insérer</small>
+        </div>
+        {% if form.message.errors %}
+          <div class="field-errors" role="alert">{{ form.message.errors }}</div>
+        {% endif %}
+        {{ form.message }}
+        <div class="form-row">
+          <span class="counter"><span id="message-count">0</span> / {{ form.message.field.max_length }}</span>
+          <button class="send-button" type="submit">Envoyer sur OBS ▶</button>
         </div>
       </form>
 
+      <div class="tag-grid">
+        <section class="card" aria-label="Balises voix">
+          <h2 class="card-title">Voix <small>{{ form.voice_labels|length }}</small></h2>
+          <div class="chips">
+            {% for label in form.voice_labels %}
+              <button type="button" class="tag-button chip chip-voice" data-tag="{{ '{' }}{{ label }}{{ '}' }}">{{ label }}</button>
+            {% endfor %}
+          </div>
+        </section>
+
+        <section class="card" aria-label="Balises audio">
+          <h2 class="card-title">Sons <small>{{ form.sound_bite_names|length }}</small></h2>
+          {% if form.sound_bite_names %}
+            <input class="search" id="sound-search" type="search" placeholder="Rechercher un son…" aria-label="Rechercher un son">
+            <div class="chips chips-scroll" id="sound-list">
+              {% for name in form.sound_bite_names %}
+                <button type="button" class="tag-button chip chip-sound" data-tag="{{ '{' }}{{ name }}{{ '}' }}">{{ name }}</button>
+              {% endfor %}
+            </div>
+            <p class="empty" id="sound-empty" hidden>Aucun son ne correspond.</p>
+          {% else %}
+            <p class="empty">Aucun son. Ajoute des fichiers dans <code>media/Sound_Bites</code>.</p>
+          {% endif %}
+        </section>
+      </div>
+
       {% if clip_queue %}
-        <section aria-label="File d'attente des clips">
-          <h2>File d'attente</h2>
-          <ul>
+        <section class="card" aria-label="File d'attente des clips">
+          <h2 class="card-title">File d'attente</h2>
+          <ul class="queue">
             {% for clip in clip_queue %}
               <li>
-                <span>{{ clip.label }}</span>
-                <span> — {{ clip.status }}</span>
+                <span class="queue-label">{{ clip.label }}</span>
+                <span class="badge{% if clip.played %} badge-played{% endif %}">{{ clip.status }}</span>
               </li>
             {% endfor %}
           </ul>
         </section>
       {% endif %}
 
-      {% if error %}
-        <p role="alert">{{ error }}</p>
-      {% endif %}
-
       {% if audio_url %}
-        <section aria-label="Audio généré">
-          <h2>Votre audio</h2>
-          <audio controls src="{{ audio_url }}">
-            Votre navigateur ne prend pas en charge la lecture audio.
-          </audio>
-          <p><a href="{{ audio_url }}">Télécharger l’audio</a></p>
+        <section class="card" aria-label="Audio généré">
+          <h2 class="card-title">Votre audio</h2>
+          <div class="result">
+            <audio controls src="{{ audio_url }}">
+              Votre navigateur ne prend pas en charge la lecture audio.
+            </audio>
+            <a class="download" href="{{ audio_url }}">⬇ Télécharger l’audio</a>
+          </div>
         </section>
       {% endif %}
     </main>

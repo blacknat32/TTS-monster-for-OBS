@@ -2,7 +2,6 @@ import re
 from pathlib import Path
 
 from django import forms
-from django.utils.html import format_html, format_html_join
 
 from TTS.chatbot import VOICE_ID
 
@@ -35,7 +34,12 @@ class PromptForm(forms.Form):
     message = forms.CharField(
         label="Message",
         max_length=1000,
-        widget=forms.Textarea(attrs={"rows": 4, "cols": 50}),
+        widget=forms.Textarea(
+            attrs={
+                "rows": 5,
+                "placeholder": "Ex : {SpongeBob} Salut le chat ! {vine-boom}",
+            }
+        ),
     )
 
     def __init__(self, *args, **kwargs):
@@ -58,28 +62,9 @@ class PromptForm(forms.Form):
         self.voices_by_tag: dict[str, str] = {
             label.casefold(): voice_id for voice_id, label in VOICE_CHOICES
         }
-        voice_tags = format_html_join(
-            ", ",
-            '<button type="button" class="tag-button" data-tag="{}">{}</button>',
-            (
-                (f"{{{label}}}", f"{{{label}}}")
-                for _, label in VOICE_CHOICES
-            ),
-        )
-        sound_tags = format_html_join(
-            ", ",
-            '<button type="button" class="tag-button" data-tag="{}">{}</button>',
-            (
-                (f"{{{path.stem}}}", f"{{{path.stem}}}")
-                for path in self.sound_bites
-            ),
-        ) or "Aucune"
-        self.fields["message"].help_text = format_html(
-            "<strong>Balises voix :</strong> {}<br>"
-            "<strong>Balises audio :</strong> {}",
-            voice_tags,
-            sound_tags,
-        )
+        # Noms affichés sur les boutons de balises du gabarit.
+        self.voice_labels: list[str] = [label for _, label in VOICE_CHOICES]
+        self.sound_bite_names: list[str] = [path.stem for path in self.sound_bites]
 
     def clean(self):
         """Vérifie chaque balise, valide le message et prépare les sons/voix à utiliser."""

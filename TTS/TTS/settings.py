@@ -12,8 +12,14 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load secrets such as TTS_MONSTER_API_KEY from the .env file at the repository
+# root. Variables already set in the environment take precedence.
+load_dotenv(BASE_DIR.parent / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -126,3 +132,10 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+# JUnit report written by the XML test runner used in CI
+# (manage.py test --testrunner xmlrunner.extra.djangotestrunner.XMLTestRunner).
+# These settings are ignored by the default test runner.
+TEST_OUTPUT_DIR = str(BASE_DIR.parent / "test-reports")
+TEST_OUTPUT_FILE_NAME = "junit.xml"
+TEST_OUTPUT_VERBOSE = 2

@@ -456,15 +456,28 @@ def _download_audio_file(
     return audio_path
 
 
+def _find_ffmpeg() -> str | None:
+    """Prefer an FFmpeg on PATH, otherwise use the one bundled by imageio-ffmpeg."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is not None:
+        return ffmpeg
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        return None
+
+
 def _compile_audio_files(audio_paths: list[Path], output_path: Path) -> Path:
     if not audio_paths:
         raise TTSGenerationError("There is no audio to combine.")
 
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = _find_ffmpeg()
     if ffmpeg is None:
         raise TTSGenerationError(
-            "FFmpeg is required to combine message audio. Install FFmpeg and ensure "
-            "it is available on PATH."
+            "FFmpeg is required to combine message audio. Install the project "
+            "requirements (imageio-ffmpeg) or put FFmpeg on PATH."
         )
 
     filter_parts = []
