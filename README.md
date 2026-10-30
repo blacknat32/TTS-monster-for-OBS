@@ -82,12 +82,16 @@ clic.
 
 ## Installation
 
-Toutes les commandes se lancent **depuis la racine du projet**. Les exemples
-sont pour Windows (PowerShell).
+Toutes les commandes se lancent **depuis la racine du projet**.
+
+Quand une commande diffère selon le système, elle est donnée pour
+**Windows (PowerShell)** et pour **Linux / macOS** (bash, zsh). Les autres
+fonctionnent telles quelles partout : PowerShell accepte aussi les `/` dans les
+chemins.
 
 ### 1. Récupérer le projet
 
-```powershell
+```bash
 git clone https://github.com/blacknat32/TTS-monster-for-OBS.git
 cd TTS-monster-for-OBS
 ```
@@ -96,19 +100,33 @@ cd TTS-monster-for-OBS
 
 Le venv isole les dépendances du projet du reste de ton PC.
 
+**Windows (PowerShell)**
+
 ```powershell
 python -m venv myenv
 .\myenv\Scripts\Activate.ps1
 ```
 
-Le début de la ligne du terminal doit afficher `(myenv)`.
-
 > Si PowerShell bloque l'activation, utilise l'invite de commandes (`cmd`) avec
 > `myenv\Scripts\activate.bat`.
 
+**Linux / macOS**
+
+```bash
+python3 -m venv myenv
+source myenv/bin/activate
+```
+
+> Sous Debian / Ubuntu, si `venv` est introuvable, installe-le d'abord :
+> `sudo apt install python3-venv`.
+
+Dans les deux cas, le début de la ligne du terminal doit afficher `(myenv)`.
+Une fois le venv activé, la commande `python` désigne le Python du venv, y
+compris sous Linux et macOS.
+
 ### 3. Installer les dépendances
 
-```powershell
+```bash
 python -m pip install -r requirements.txt
 ```
 
@@ -118,15 +136,24 @@ Cette commande installe Django, le client OBS WebSocket et FFmpeg.
 
 À faire une seule fois :
 
-```powershell
-python TTS\manage.py migrate
+```bash
+python TTS/manage.py migrate
 ```
 
 ### 5. Créer tes fichiers de configuration
 
+**Windows (PowerShell)**
+
 ```powershell
-copy .env.example .env
-copy "TTS\TTS\config file.example" "TTS\TTS\config file"
+Copy-Item .env.example .env
+Copy-Item "TTS/TTS/config file.example" "TTS/TTS/config file"
+```
+
+**Linux / macOS**
+
+```bash
+cp .env.example .env
+cp "TTS/TTS/config file.example" "TTS/TTS/config file"
 ```
 
 Remplis-les ensuite comme expliqué dans [Configuration](#configuration).
@@ -152,7 +179,7 @@ TTS_MONSTER_API_KEY=ttsm_ta_cle
 Ta clé se trouve sur [console.tts.monster](https://console.tts.monster).
 Ne la mets **jamais** directement dans le code.
 
-> Une variable d'environnement Windows `TTS_MONSTER_API_KEY` déjà définie est
+> Une variable d'environnement système `TTS_MONSTER_API_KEY` déjà définie est
 > prioritaire sur le `.env`.
 
 ### La connexion à OBS (`TTS/TTS/config file`)
@@ -187,14 +214,18 @@ serveur WebSocket → Afficher les informations de connexion**.
 ### Lancer l'application
 
 1. Lance OBS.
-2. Dans un terminal, à la racine du projet :
+2. Dans un terminal, à la racine du projet, active le venv :
 
-   ```powershell
-   .\myenv\Scripts\Activate.ps1
-   python TTS\manage.py runserver
+   - Windows (PowerShell) : `.\myenv\Scripts\Activate.ps1`
+   - Linux / macOS : `source myenv/bin/activate`
+
+3. Lance le serveur :
+
+   ```bash
+   python TTS/manage.py runserver
    ```
 
-3. Ouvre [http://127.0.0.1:8000/message/](http://127.0.0.1:8000/message/).
+4. Ouvre [http://127.0.0.1:8000/message/](http://127.0.0.1:8000/message/).
 
 Pour arrêter le serveur : `Ctrl + C` dans le terminal.
 
@@ -235,17 +266,19 @@ Deux règles à respecter :
 
 ## Mettre à jour le projet
 
-Après avoir récupéré les dernières modifications :
+Récupère les dernières modifications, active le venv (voir
+[Lancer l'application](#lancer-lapplication)), puis mets à jour les dépendances
+et la base de données :
 
-```powershell
+```bash
 git pull
-.\myenv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python TTS\manage.py migrate
+python TTS/manage.py migrate
 ```
 
 Si l'ancien design s'affiche encore dans le navigateur, force le rechargement
-avec `Ctrl + Shift + R` : le navigateur a gardé l'ancien CSS en cache.
+avec `Ctrl + Shift + R` (`Cmd + Shift + R` sur macOS) : le navigateur a gardé
+l'ancien CSS en cache.
 
 ## Dépannage
 
@@ -263,9 +296,10 @@ avec `Ctrl + Shift + R` : le navigateur a gardé l'ancien CSS en cache.
 | Symptôme | Solution |
 |---|---|
 | `No module named 'django'` / `'obsws_python'` / `'dotenv'` | Le venv n'est pas activé, ou les dépendances ne sont pas à jour : `python -m pip install -r requirements.txt`. |
-| `no such table: django_session` | Lance `python TTS\manage.py migrate`. |
+| `no such table: django_session` | Lance `python TTS/manage.py migrate`. |
 | « Page not found » sur `http://127.0.0.1:8000/` | Normal : l'application est sur `/message/`. |
-| L'ancien design s'affiche | Recharge sans cache : `Ctrl + Shift + R`. |
+| L'ancien design s'affiche | Recharge sans cache : `Ctrl + Shift + R` (`Cmd + Shift + R` sur macOS). |
+| `python: command not found` (Linux / macOS) | Le venv n'est pas activé : `source myenv/bin/activate`. Hors venv, utilise `python3`. |
 
 ### Erreurs affichées dans la page
 
@@ -314,8 +348,8 @@ sert aussi de balise.
 
 ### Lancer les tests
 
-```powershell
-python TTS\manage.py test listings
+```bash
+python TTS/manage.py test listings
 ```
 
 Les tests n'appellent ni TTS Monster ni OBS : ces services sont simulés.
@@ -333,10 +367,10 @@ aussi téléchargeable dans la section *Artifacts*.
 
 Pour générer le même rapport en local :
 
-```powershell
+```bash
 python -m pip install unittest-xml-reporting
-python TTS\manage.py test listings --testrunner xmlrunner.extra.djangotestrunner.XMLTestRunner
-python .github\scripts\test_report.py test-reports\junit.xml
+python TTS/manage.py test listings --testrunner xmlrunner.extra.djangotestrunner.XMLTestRunner
+python .github/scripts/test_report.py test-reports/junit.xml
 ```
 
 La branche `main` est protégée : une pull request ne peut être fusionnée que si
