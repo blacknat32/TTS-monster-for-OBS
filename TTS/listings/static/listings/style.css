@@ -51,6 +51,18 @@ main {
     margin: 0.25rem 0 0;
 }
 
+.players-link {
+    color: var(--accent);
+    display: inline-block;
+    font-weight: 600;
+    margin-top: 0.75rem;
+    text-decoration: none;
+}
+
+.players-link:hover {
+    text-decoration: underline;
+}
+
 /* Cartes */
 
 .card {
@@ -81,6 +93,108 @@ main {
     background: rgba(255, 107, 107, 0.08);
     border-color: var(--danger);
     color: #ffd1d1;
+}
+
+.players-page {
+    max-width: 42rem;
+}
+
+.player-slots {
+    display: grid;
+    gap: 0.75rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.player-slot {
+    align-items: center;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    min-height: 4rem;
+    padding: 0.9rem 1rem;
+}
+
+.player-number {
+    color: var(--muted);
+}
+
+.player-name {
+    font-size: 1.1rem;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+    text-align: right;
+}
+
+.player-slot-info {
+    display: grid;
+    gap: 0.3rem;
+}
+
+.player-voice-form {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+.player-voice-form label {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.player-voice-form select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    max-width: 10rem;
+    padding: 0.55rem;
+}
+
+.voice-save-button {
+    background: var(--accent);
+    border: 0;
+    border-radius: 8px;
+    color: var(--accent-ink);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 650;
+    padding: 0.55rem 0.75rem;
+}
+
+.voice-success {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.players-status {
+    color: var(--muted);
+    margin: 1rem 0 0;
+}
+
+.player-instructions p {
+    margin-top: 0;
+}
+
+.player-instructions ul {
+    display: grid;
+    gap: 0.5rem;
+    list-style: none;
+    padding: 0;
+}
+
+.player-instructions code {
+    background: var(--surface-2);
+    border-radius: 6px;
+    color: var(--accent);
+    padding: 0.2rem 0.4rem;
 }
 
 /* Formulaire */

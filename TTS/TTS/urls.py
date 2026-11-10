@@ -21,5 +21,7 @@ from listings import views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('message/', views.index, name='listings'),
-
+    path('players/', views.players, name='players'),
+    path('players/status/', views.players_status, name='players_status'),
+    path('players/voice/', views.set_player_voice, name='set_player_voice'),
 ]

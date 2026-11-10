@@ -1,0 +1,75 @@
+{% load static %}
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Joueurs Twitch — Brain-Rot Simulator</title>
+    <link rel="stylesheet" href="{% static 'listings/style.css' %}">
+    <script src="{% static 'listings/players.js' %}" defer></script>
+  </head>
+  <body>
+    <main class="players-page">
+      <header class="page-header">
+        <h1>Joueurs <span>Twitch</span></h1>
+        <p class="subtitle">Écris une commande dans le chat pour rejoindre une place.</p>
+      </header>
+
+      <section class="card" aria-labelledby="players-title">
+        <h2 class="card-title" id="players-title">Les joueurs</h2>
+        <ol class="player-slots" id="player-slots" data-status-url="{% url 'players_status' %}">
+          {% for player in players %}
+            <li class="player-slot" data-player="{{ player.player_number }}">
+              <div class="player-slot-info">
+                <span class="player-number">Joueur {{ player.player_number }}</span>
+                <span class="player-name" data-player-name>
+                  {% if player.display_name %}{{ player.display_name }}{% else %}En attente d'un joueur{% endif %}
+                </span>
+              </div>
+              <form class="player-voice-form" action="{% url 'set_player_voice' %}" method="post">
+                {% csrf_token %}
+                <input type="hidden" name="player_number" value="{{ player.player_number }}">
+                <label for="voice-player-{{ player.player_number }}">Voix</label>
+                <select
+                  id="voice-player-{{ player.player_number }}"
+                  name="voice_id"
+                  data-player-voice
+                  aria-label="Voix de Joueur {{ player.player_number }}"
+                >
+                  {% for voice_id, voice_name in voice_choices %}
+                    <option value="{{ voice_id }}"{% if player.voice_id == voice_id %} selected{% endif %}>{{ voice_name }}</option>
+                  {% endfor %}
+                </select>
+                <button class="voice-save-button" type="submit">Enregistrer</button>
+              </form>
+            </li>
+          {% endfor %}
+        </ol>
+        <p class="players-status" id="players-status" role="status" aria-live="polite">
+          Connexion au chat…
+        </p>
+      </section>
+
+      {% if messages %}
+        <div aria-live="polite">
+          {% for message in messages %}
+            <p class="card {% if message.tags == 'error' %}alert{% else %}voice-success{% endif %}">
+              {{ message }}
+            </p>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <section class="card player-instructions">
+        <h2 class="card-title">Pour rejoindre</h2>
+        <p>Dans le chat Twitch, écris l’une de ces commandes :</p>
+        <ul>
+          <li><code>!player1</code> — Joueur 1</li>
+          <li><code>!player2</code> — Joueur 2</li>
+          <li><code>!player3</code> — Joueur 3</li>
+        </ul>
+        <p>La première personne à choisir une place la garde jusqu’à l’arrêt du bot.</p>
+      </section>
+    </main>
+  </body>
+</html>

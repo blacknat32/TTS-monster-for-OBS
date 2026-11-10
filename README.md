@@ -130,7 +130,7 @@ compris sous Linux et macOS.
 python -m pip install -r requirements.txt
 ```
 
-Cette commande installe Django, le client OBS WebSocket et FFmpeg.
+Cette commande installe Django, le client OBS WebSocket, TwitchIO et FFmpeg.
 
 ### 4. Créer la base de données
 
@@ -165,7 +165,7 @@ tes secrets ne seront jamais publiés, et chacun garde ses propres réglages.
 
 | Fichier | Contenu | Modèle (versionné) |
 |---|---|---|
-| `.env` | Ta clé API TTS Monster | `.env.example` |
+| `.env` | Clé API TTS Monster et accès au chat Twitch | `.env.example` |
 | `TTS/TTS/config file` | Connexion à ton OBS | `TTS/TTS/config file.example` |
 
 ### La clé API TTS Monster (`.env`)
@@ -174,6 +174,9 @@ Ouvre `.env` à la racine du projet et colle ta clé après le `=` :
 
 ```
 TTS_MONSTER_API_KEY=ttsm_ta_cle
+Access_token=ton_token_twitch
+Client_ID=ton_client_id_twitch
+Twitch_Channel=nom_de_ta_chaine
 ```
 
 Ta clé se trouve sur [console.tts.monster](https://console.tts.monster).
@@ -181,6 +184,11 @@ Ne la mets **jamais** directement dans le code.
 
 > Une variable d'environnement système `TTS_MONSTER_API_KEY` déjà définie est
 > prioritaire sur le `.env`.
+
+Pour Twitch, `Access_token` doit avoir la permission `chat:read` et avoir été
+émis par l'application associée à `Client_ID`. Garde ces deux valeurs
+confidentielles. `Twitch_Channel` est le nom de la chaîne que le bot doit
+rejoindre, sans `#`.
 
 ### La connexion à OBS (`TTS/TTS/config file`)
 
@@ -236,6 +244,38 @@ Pour arrêter le serveur : `Ctrl + C` dans le terminal.
 - **Voix** 🎙 et **Sons** 🔊 : un clic sur un bouton insère la balise à la fin
   du message. La barre de recherche filtre les sons par nom.
 - **File d'attente** : les 10 derniers clips envoyés pendant ta session.
+
+### Lire le chat Twitch
+
+`python TTS/manage.py runserver` démarre automatiquement le lecteur Twitch
+pour `Twitch_Channel`. Il vérifie que `Access_token` correspond à `Client_ID`,
+rejoint la chaîne, puis fait lire chaque message utilisateur par TTS Monster
+et le joue dans OBS avec la voix par défaut (SpongeBob). Les messages sont
+traités dans l'ordre reçu. OBS doit être lancé et configuré comme indiqué dans
+[Préparer OBS](#préparer-obs). Arrête le lecteur et le serveur avec `Ctrl + C`.
+
+Le lecteur peut aussi être lancé seul dans un second terminal avec
+`python TTS/manage.py twitch_chat nom_de_la_chaine`.
+
+### Afficher les joueurs Twitch
+
+Après cette mise à jour, applique la migration une fois depuis la racine du
+projet :
+
+```powershell
+python TTS\manage.py migrate
+```
+
+Avec le lecteur Twitch en marche, ouvre
+[http://127.0.0.1:8000/players/](http://127.0.0.1:8000/players/). Les trois
+places se mettent à jour automatiquement. Dans le chat écouté par le bot,
+chaque spectateur peut choisir une place libre en envoyant `!player1`,
+`!player2` ou `!player3`. Une place déjà prise n'est pas remplacée ; une même
+personne peut changer vers une autre place libre. Les places sont vidées à
+l'arrêt du bot et lors de son prochain démarrage. Chaque place a son propre
+sélecteur de voix basé sur les voix disponibles dans le formulaire ; valide le
+choix avec **Enregistrer**. Les messages du joueur réservé sont ensuite lus
+avec cette voix. Les choix sont conservés même après l'arrêt du bot.
 
 ### Les balises
 
@@ -295,7 +335,7 @@ l'ancien CSS en cache.
 
 | Symptôme | Solution |
 |---|---|
-| `No module named 'django'` / `'obsws_python'` / `'dotenv'` | Le venv n'est pas activé, ou les dépendances ne sont pas à jour : `python -m pip install -r requirements.txt`. |
+| `No module named 'django'` / `'obsws_python'` / `'dotenv'` / `'twitchio'` | Le venv n'est pas activé, ou les dépendances ne sont pas à jour : `python -m pip install -r requirements.txt`. |
 | `no such table: django_session` | Lance `python TTS/manage.py migrate`. |
 | « Page not found » sur `http://127.0.0.1:8000/` | Normal : l'application est sur `/message/`. |
 | L'ancien design s'affiche | Recharge sans cache : `Ctrl + Shift + R` (`Cmd + Shift + R` sur macOS). |
@@ -306,6 +346,7 @@ l'ancien CSS en cache.
 | Message | Solution |
 |---|---|
 | `TTS_MONSTER_API_KEY is not configured` | Vérifie que `.env` existe à la racine du projet et contient ta clé, puis relance le serveur. |
+| Twitch indique que le token est invalide, que `Client_ID` ne correspond pas, ou que `chat:read` manque | Vérifie les deux valeurs Twitch dans `.env` et régénère un token autorisé avec la permission `chat:read`. |
 | `The TTS service request failed.` | Clé invalide, quota TTS Monster épuisé, ou pas de connexion Internet. |
 | `FFmpeg is required…` | Les dépendances ne sont pas à jour : `python -m pip install -r requirements.txt`. |
 | `Balise inconnue : {…}` | La balise ne correspond à aucune voix ni à aucun son. Vérifie l'orthographe. |

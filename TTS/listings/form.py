@@ -103,3 +103,11 @@ class PromptForm(forms.Form):
             self.add_error("message", "Ajoutez du texte ou une balise de son.")
 
         return cleaned_data
+
+
+class PlayerVoiceForm(forms.Form):
+    player_number = forms.TypedChoiceField(
+        choices=[(number, f"Joueur {number}") for number in range(1, 4)],
+        coerce=int,
+    )
+    voice_id = forms.ChoiceField(choices=VOICE_CHOICES)

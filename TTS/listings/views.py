@@ -2,7 +2,11 @@ import hashlib
 import logging
 from pathlib import Path
 
-from django.shortcuts import render
+from django.http import JsonResponse
+from django.contrib import messages
+from django.shortcuts import redirect, render
+from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST
 
 from TTS.chatbot import (
     TTSGenerationError,
@@ -12,7 +16,9 @@ from TTS.chatbot import (
     url_tts,
 )
 
-from .form import PromptForm, SOUND_BITE_TAG_PATTERN
+from .form import PlayerVoiceForm, PromptForm, SOUND_BITE_TAG_PATTERN, VOICE_CHOICES
+from .models import PlayerSlot
+from .players import ensure_player_slots
 
 
 logger = logging.getLogger(__name__)
@@ -103,6 +109,54 @@ def index(request):
         "listings/index.html",
         {"form": form, "audio_url": audio_url, "error": error, "clip_queue": clip_queue},
     )
+
+
+def players(request):
+    ensure_player_slots()
+    return render(
+        request,
+        "listings/players.html",
+        {
+            "players": PlayerSlot.objects.all(),
+            "player_numbers": range(1, 4),
+            "voice_choices": VOICE_CHOICES,
+        },
+    )
+
+
+@never_cache
+def players_status(request):
+    ensure_player_slots()
+    voice_labels = dict((voice_id, label) for voice_id, label in VOICE_CHOICES)
+    return JsonResponse(
+        {
+            "players": [
+                {
+                    "number": slot.player_number,
+                    "username": slot.display_name or None,
+                    "voice_id": slot.voice_id,
+                    "voice_name": voice_labels[slot.voice_id],
+                }
+                for slot in PlayerSlot.objects.all()
+            ]
+        }
+    )
+
+
+@require_POST
+def set_player_voice(request):
+    form = PlayerVoiceForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, "Choisissez une place et une voix valides.")
+        return redirect("players")
+
+    player_number = form.cleaned_data["player_number"]
+    slot, _ = PlayerSlot.objects.get_or_create(player_number=player_number)
+    slot.voice_id = form.cleaned_data["voice_id"]
+    slot.save(update_fields=["voice_id"])
+    voice_name = dict(VOICE_CHOICES)[slot.voice_id]
+    messages.success(request, f"Voix de Joueur {player_number} réglée sur {voice_name}.")
+    return redirect("players")
 
 
 def _send_message_with_tags(
