@@ -5,6 +5,7 @@ from django.contrib.staticfiles.management.commands.runserver import (
     Command as DjangoRunserverCommand,
 )
 
+from listings.players import clear_player_slots
 from listings.twitch_runtime import TwitchChatRuntime
 
 
@@ -17,8 +18,14 @@ class Command(DjangoRunserverCommand):
         try:
             return super().inner_run(*args, **options)
         finally:
-            if self._twitch_runtime is not None:
-                self._twitch_runtime.stop()
+            try:
+                if self._twitch_runtime is not None:
+                    self._twitch_runtime.stop()
+            finally:
+                try:
+                    clear_player_slots()
+                except Exception:
+                    logger.exception("Could not clear Twitch player slots on shutdown.")
 
     def get_handler(self, *args, **options):
         handler = super().get_handler(*args, **options)

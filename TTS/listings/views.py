@@ -133,7 +133,7 @@ def players_status(request):
             "players": [
                 {
                     "number": slot.player_number,
-                    "username": slot.display_name or None,
+                    "username": slot.display_name or slot.username or None,
                     "voice_id": slot.voice_id,
                     "voice_name": voice_labels[slot.voice_id],
                 }

@@ -23,7 +23,7 @@
               <div class="player-slot-info">
                 <span class="player-number">Joueur {{ player.player_number }}</span>
                 <span class="player-name" data-player-name>
-                  {% if player.display_name %}{{ player.display_name }}{% else %}En attente d'un joueur{% endif %}
+                  {% if player.display_name %}{{ player.display_name }}{% elif player.username %}{{ player.username }}{% else %}En attente d'un joueur{% endif %}
                 </span>
               </div>
               <form class="player-voice-form" action="{% url 'set_player_voice' %}" method="post">

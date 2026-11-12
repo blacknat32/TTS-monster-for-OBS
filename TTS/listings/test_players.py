@@ -89,6 +89,15 @@ class PlayerSlotTests(TestCase):
             "max-age=0, no-cache, no-store, must-revalidate, private",
         )
 
+    def test_status_page_shows_login_when_display_name_is_missing(self):
+        claim_player_slot(3, "viewer", "Viewer")
+        PlayerSlot.objects.filter(player_number=3).update(display_name="")
+
+        response = self.client.get(reverse("players_status"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["players"][2]["username"], "viewer")
+
     def test_players_page_loads_live_status_script(self):
         response = self.client.get(reverse("players"))
 
@@ -230,3 +239,16 @@ class TwitchRunserverTests(TestCase):
         self.assertIs(result, handler)
         runtime_class.assert_called_once_with("streamer")
         runtime_class.return_value.start.assert_called_once_with()
+
+    @patch("listings.management.commands.runserver.clear_player_slots")
+    @patch("django.contrib.staticfiles.management.commands.runserver.Command.inner_run")
+    def test_runserver_clears_player_slots_when_the_app_stops(
+        self, inner_run, clear_slots
+    ):
+        inner_run.return_value = "stopped"
+        command = RunserverCommand()
+
+        result = command.inner_run()
+
+        self.assertEqual(result, "stopped")
+        clear_slots.assert_called_once_with()
