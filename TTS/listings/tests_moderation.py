@@ -591,11 +591,15 @@ class VoiceImageTests(TestCase):
     def setUp(self):
         self.patches = {}
         for name in ("url_tts", "send_audio_to_obs", "send_audio_sequence_to_obs",
-                     "VoiceImageAnimation", "wait_for_obs_playback_end"):
+                     "VoiceImageAnimation", "VoiceScaleFilter",
+                     "wait_for_obs_playback_end"):
             patcher = patch(f"listings.playback.{name}")
             self.patches[name] = patcher.start()
             self.addCleanup(patcher.stop)
         self.patches["url_tts"].side_effect = lambda text, voice: f"url:{text.strip()}"
+        self.patches["wait_for_obs_playback_end"].return_value = (
+            "OBS_MEDIA_STATE_ENDED"
+        )
         self.animation = self.patches["VoiceImageAnimation"].return_value
 
     def play(self, message):
@@ -617,20 +621,76 @@ class VoiceImageTests(TestCase):
         self.play("Bonjour")
 
         self.assertEqual(self.voices(), ["SpongeBob"])
-        self.patches["send_audio_to_obs"].assert_called_once_with("url:Bonjour")
+        self.assertEqual(
+            self.patches["send_audio_to_obs"].call_args.args, ("url:Bonjour",)
+        )
+        self.assertTrue(
+            callable(
+                self.patches["send_audio_to_obs"].call_args.kwargs["before_playback"]
+            )
+        )
 
-    def test_voices_in_message_order_and_audio_is_one_clip(self):
+    def test_each_voice_section_is_sent_to_obs_in_message_order(self):
         directory = self.play("Salut (bruh) Shadow: Coucou Adam: Yo Shadow: Re")
 
         # Chaque voix une seule fois, dans l'ordre d'apparition.
         self.assertEqual(self.voices(), ["SpongeBob", "Shadow", "Adam"])
-        self.patches["send_audio_sequence_to_obs"].assert_called_once_with(
-            ["url:Salut", directory / "bruh.mp3", "url:Coucou", "url:Yo", "url:Re"]
+        self.assertEqual(
+            [
+                call.args[0]
+                for call in self.patches["send_audio_sequence_to_obs"].call_args_list
+            ],
+            [
+                ["url:Salut", directory / "bruh.mp3"],
+                ["url:Coucou"],
+                ["url:Yo"],
+                ["url:Re"],
+            ],
+        )
+        self.assertEqual(
+            self.patches["wait_for_obs_playback_end"].call_count, 4
+        )
+
+    def test_scale_to_sound_switches_for_each_heard_voice(self):
+        scale_filter = self.patches["VoiceScaleFilter"].return_value
+
+        def start_section(_sequence, before_playback=None):
+            if before_playback is not None:
+                before_playback()
+
+        self.patches["send_audio_sequence_to_obs"].side_effect = start_section
+
+        self.play("Salut Shadow: Coucou Adam: Yo")
+
+        self.assertEqual(
+            [call.args[0] for call in scale_filter.activate.call_args_list],
+            ["SpongeBob", "Shadow", "Adam"],
+        )
+        self.assertEqual(scale_filter.stop.call_count, 4)
+
+    def test_skipping_a_section_does_not_play_later_voices(self):
+        self.patches["wait_for_obs_playback_end"].return_value = (
+            "OBS_MEDIA_STATE_STOPPED"
+        )
+        self.patches["send_audio_sequence_to_obs"].side_effect = (
+            lambda sequence, before_playback=None: before_playback()
+            if before_playback is not None
+            else None
+        )
+
+        self.play("Salut Shadow: Coucou Adam: Yo")
+
+        self.patches["send_audio_sequence_to_obs"].assert_called_once()
+        self.assertEqual(
+            self.patches["VoiceScaleFilter"].return_value.activate.call_args.args,
+            ("SpongeBob",),
         )
 
     def test_images_rise_once_the_clip_has_started_and_fall_at_the_end(self):
         events = []
-        self.patches["send_audio_to_obs"].side_effect = lambda *a: events.append("play")
+        self.patches["send_audio_to_obs"].side_effect = (
+            lambda *a, **k: events.append("play")
+        )
         self.animation.start.side_effect = lambda: events.append("rise")
         self.patches["wait_for_obs_playback_end"].side_effect = lambda *a: events.append("wait")
         self.animation.stop.side_effect = lambda: events.append("fall")

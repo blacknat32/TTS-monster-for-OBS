@@ -12,20 +12,25 @@ Le message est découpé en **sections**, une par voix. Exemple :
     → section Kermit    : « Coucou », son vine-boom
 
 Les sections servent à savoir quelle voix lit quel texte, et quelles voix
-apparaissent dans le message. Le son, lui, reste un seul clip assemblé.
+apparaissent dans le message. Elles permettent aussi de commuter le filtre OBS
+de chaque voix au moment où elle est entendue.
 
-Dès que le clip démarre, les images de ces voix (sources « SpongeBob OBS
-Image » puis « Kermit OBS Image » ici) montent une par une du bas de l'écran,
-puis redescendent ensemble à la fin. L'animation et ses réglages (durées,
-décalage) sont dans ``VoiceImageAnimation``, dans ``TTS/chatbot.py``.
+Dès que le premier morceau audio démarre, les images de ces voix (sources
+« SpongeBob OBS Image » puis « Kermit OBS Image » ici) montent une par une du
+bas de l'écran, puis redescendent ensemble à la fin. L'animation et ses
+réglages (durées, décalage) sont dans ``VoiceImageAnimation``, dans
+``TTS/chatbot.py``.
 """
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from TTS.chatbot import (
+    TTSGenerationError,
     VOICE_ID,
     VoiceImageAnimation,
+    VoiceScaleFilter,
     send_audio_sequence_to_obs,
     send_audio_to_obs,
     url_tts,
@@ -38,6 +43,7 @@ from .form import SOUND_BITE_TAG_PATTERN, VOICE_CHOICES
 # Identifiant TTS Monster → nom de la voix (« Adam »…), pour trouver son image.
 VOICE_LABELS_BY_ID = {voice_id: label for voice_id, label in VOICE_CHOICES}
 ALL_VOICE_LABELS = [label for _, label in VOICE_CHOICES]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -86,42 +92,69 @@ def play_message(
     sound_bite_tags: dict[str, Path],
     voice_tags: dict[str, str],
 ) -> str | None:
-    """Joue le message dans OBS en un seul clip, avec les images de ses voix.
+    """Joue les sections vocales avec les images et filtres de leurs voix.
 
-    1. Le clip est généré puis lancé dans OBS (texte et sons en un seul fichier).
-    2. Dès qu'il démarre, les images des voix montent une par une, en
-       arrière-plan : le son n'attend pas l'animation.
-    3. On attend la fin du clip (ou le bouton « Passer »).
-    4. Les images redescendent ensemble, puis sont masquées et remises à leur
-       place, même en cas d'erreur.
+    Le filtre « scale to sound » est activé au démarrage de chaque section et
+    désactivé à sa fin. Les images s'animent en parallèle de toute la lecture.
 
     Retourne l'URL TTS Monster pour un message sans balise (affichée sur la
     page /message/), sinon ``None``.
     """
     sections = split_into_sections(message, sound_bite_tags, voice_tags)
     animation = VoiceImageAnimation(message_voice_labels(sections), ALL_VOICE_LABELS)
+    voice_filter = VoiceScaleFilter()
     audio_url = None
+
+    def stop_voice_filter() -> None:
+        try:
+            voice_filter.stop()
+        except TTSGenerationError:
+            logger.exception("Could not disable the voice's scale to sound filter.")
+
     try:
         if not sound_bite_tags and not voice_tags:
-            # Message sans balise : un seul fichier TTS Monster, envoyé tel quel.
             audio_url = url_tts(message, VOICE_ID)
-            send_audio_to_obs(audio_url)
+            voice_label = VOICE_LABELS_BY_ID.get(VOICE_ID)
+            before_playback = (
+                (lambda: voice_filter.activate(voice_label))
+                if voice_label
+                else None
+            )
+            send_audio_to_obs(audio_url, before_playback=before_playback)
+            animation.start()
+            wait_for_obs_playback_end()
         else:
-            # Tout le texte (chaque morceau avec sa voix) et les sons, dans
-            # l'ordre, assemblés et normalisés par FFmpeg en un seul fichier.
-            send_audio_sequence_to_obs([
-                url_tts(part, section.voice_id) if isinstance(part, str) else part
+            audio_sequences = [
+                [
+                    url_tts(part, section.voice_id)
+                    if isinstance(part, str)
+                    else part
+                    for part in section.parts
+                ]
                 for section in sections
-                for part in section.parts
-            ])
-        # Le clip vient de démarrer dans OBS : on lance la montée des images.
-        # On ne le fait pas avant, sinon les images monteraient pendant que
-        # TTS Monster génère encore la voix.
-        animation.start()
-        wait_for_obs_playback_end()
+            ]
+            animation_started = False
+            for section, audio_sequence in zip(sections, audio_sequences):
+                voice_label = VOICE_LABELS_BY_ID.get(section.voice_id)
+                before_playback = (
+                    (lambda label=voice_label: voice_filter.activate(label))
+                    if voice_label
+                    else None
+                )
+                send_audio_sequence_to_obs(
+                    audio_sequence, before_playback=before_playback
+                )
+                if not animation_started:
+                    animation.start()
+                    animation_started = True
+                try:
+                    playback_state = wait_for_obs_playback_end()
+                finally:
+                    stop_voice_filter()
+                if playback_state != "OBS_MEDIA_STATE_ENDED":
+                    break
     finally:
-        # Descente, puis images masquées et remises en place, même en cas
-        # d'erreur (sans effet si l'animation n'a pas démarré).
+        stop_voice_filter()
         animation.stop()
     return audio_url
 

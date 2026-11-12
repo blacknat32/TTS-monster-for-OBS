@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PureWindowsPath
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests
@@ -208,13 +208,81 @@ def stop_obs_playback() -> None:
         raise TTSGenerationError(f"OBS could not stop the clip: {exc}") from exc
 
 
+SCALE_TO_SOUND_FILTER_NAME = "Scale To Sound"
+
+
+def set_scale_to_sound_filter(voice_label: str, enabled: bool) -> None:
+    """Active ou désactive le filtre OBS sur la source image de cette voix."""
+    try:
+        from obsws_python.error import OBSSDKError
+        from websocket import WebSocketTimeoutException
+    except ImportError as exc:
+        raise TTSGenerationError(
+            "OBS WebSocket support is missing; install the project requirements."
+        ) from exc
+
+    host, port, _, _ = _load_obs_settings()
+    source_name = voice_image_source_name(voice_label)
+    try:
+        with _obs_lock:
+            connect_to_obs()
+            client = _obs_client
+            if client is None:
+                raise TTSGenerationError("OBS WebSocket connection was not established.")
+            client.set_source_filter_enabled(
+                source_name, SCALE_TO_SOUND_FILTER_NAME, enabled
+            )
+    except TTSGenerationError:
+        raise
+    except (OSError, WebSocketTimeoutException) as exc:
+        disconnect_from_obs()
+        raise TTSGenerationError(
+            f"Cannot connect to OBS WebSocket at {host}:{port} to update filter "
+            f"{SCALE_TO_SOUND_FILTER_NAME!r} on source {source_name!r}."
+        ) from exc
+    except OBSSDKError as exc:
+        raise TTSGenerationError(
+            f"OBS could not update filter {SCALE_TO_SOUND_FILTER_NAME!r} "
+            f"on source {source_name!r}: {exc}"
+        ) from exc
+
+
+class VoiceScaleFilter:
+    """Active le filtre « Scale To Sound » de la voix en cours de lecture."""
+
+    def __init__(self) -> None:
+        self._active_label: str | None = None
+
+    def activate(self, voice_label: str) -> None:
+        if self._active_label == voice_label:
+            return
+        try:
+            self.stop()
+            set_scale_to_sound_filter(voice_label, True)
+        except TTSGenerationError:
+            logger.exception(
+                "Could not activate OBS filter %r for voice %r.",
+                SCALE_TO_SOUND_FILTER_NAME,
+                voice_label,
+            )
+            return
+        self._active_label = voice_label
+
+    def stop(self) -> None:
+        if self._active_label is None:
+            return
+        voice_label = self._active_label
+        set_scale_to_sound_filter(voice_label, False)
+        self._active_label = None
+
+
 # --- Images des voix -----------------------------------------------------------
 # Pendant un TTS, OBS affiche une image pour chaque voix du message, avec une
 # animation :
 #
 # - les images **montent** du bas de l'écran jusqu'à leur place, une par une,
 #   dans l'ordre des voix du message, avec un décalage entre deux images ;
-# - à la fin du clip (ou avec « Passer »), elles **redescendent** toutes
+# - à la fin du message (ou avec « Passer »), elles **redescendent** toutes
 #   ensemble sous l'écran, puis sont masquées.
 #
 # Leur « place », c'est la position où elles ont été posées dans OBS : le bot la
@@ -417,7 +485,7 @@ class VoiceImageAnimation:
         try:
             for index, image in enumerate(self.images):
                 if index and self._stop.wait(self.rise_delay):
-                    return  # Fin du clip avant le tour de cette image.
+                    return  # Fin du message avant le tour de cette image.
                 if self._stop.is_set():
                     return
                 with _obs_lock:
@@ -470,7 +538,7 @@ class VoiceImageAnimation:
     def _animate_each(self, images, starts, ends, duration, interruptible) -> None:
         """Déplace les images de leur départ à leur arrivée en ``duration`` secondes.
 
-        Une montée (``interruptible``) s'arrête net si le clip se termine ; la
+        Une montée (``interruptible``) s'arrête net si le message se termine ; la
         descente finale, elle, va toujours jusqu'au bout.
         """
         frames = max(1, round(duration * ANIMATION_FPS))
@@ -702,6 +770,7 @@ def url_tts(message: str, voice_id: str = VOICE_ID) -> str:
 def _send_local_audio_to_obs(
     audio_path: Path,
     obs_settings: tuple[str, int, str, str],
+    before_playback: Callable[[], None] | None = None,
 ) -> Path:
     host, port, _, input_name = obs_settings
     if not audio_path.is_file():
@@ -740,6 +809,8 @@ def _send_local_audio_to_obs(
             _delete_replaced_generated_audio(
                 previous_settings, audio_path.resolve(), obs_platform
             )
+            if before_playback is not None:
+                before_playback()
             _start_media_playback(client, input_name)
     except (OSError, WebSocketTimeoutException, OBSSDKTimeoutError) as exc:
         disconnect_from_obs()
@@ -775,7 +846,9 @@ def send_local_audio_to_obs(audio_path: Path) -> Path:
     return _send_local_audio_to_obs(audio_path, _load_obs_settings())
 
 
-def send_audio_to_obs(audio_url: str) -> Path:
+def send_audio_to_obs(
+    audio_url: str, before_playback: Callable[[], None] | None = None
+) -> Path:
     obs_settings = _load_obs_settings()
     try:
         AUDIO_DIRECTORY.mkdir(parents=True, exist_ok=True)
@@ -785,7 +858,12 @@ def send_audio_to_obs(audio_url: str) -> Path:
     audio_path = _download_audio_file(
         audio_url, AUDIO_DIRECTORY, uuid.uuid4().hex, "generated audio"
     )
-    sent_audio_path = _send_local_audio_to_obs(audio_path, obs_settings)
+    if before_playback is None:
+        sent_audio_path = _send_local_audio_to_obs(audio_path, obs_settings)
+    else:
+        sent_audio_path = _send_local_audio_to_obs(
+            audio_path, obs_settings, before_playback
+        )
     _schedule_audio_file_cleanup(sent_audio_path)
     return sent_audio_path
 
@@ -908,7 +986,10 @@ def _compile_audio_files(audio_paths: list[Path], output_path: Path) -> Path:
     return output_path
 
 
-def send_audio_sequence_to_obs(audio_sequence: list[str | Path]) -> Path:
+def send_audio_sequence_to_obs(
+    audio_sequence: list[str | Path],
+    before_playback: Callable[[], None] | None = None,
+) -> Path:
     if not audio_sequence:
         raise TTSGenerationError("There is no audio to combine.")
 
@@ -952,6 +1033,11 @@ def send_audio_sequence_to_obs(audio_sequence: list[str | Path]) -> Path:
                 logger.exception("Failed to remove incomplete audio file %s", output_path)
             raise
 
-    sent_audio_path = _send_local_audio_to_obs(output_path, obs_settings)
+    if before_playback is None:
+        sent_audio_path = _send_local_audio_to_obs(output_path, obs_settings)
+    else:
+        sent_audio_path = _send_local_audio_to_obs(
+            output_path, obs_settings, before_playback
+        )
     _schedule_audio_file_cleanup(sent_audio_path)
     return sent_audio_path

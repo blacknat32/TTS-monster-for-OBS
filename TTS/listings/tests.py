@@ -9,7 +9,7 @@ from pathlib import Path
 from struct import pack
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import requests
 from django.test import TestCase
@@ -18,6 +18,7 @@ from django.urls import reverse
 from TTS.chatbot import (
     TTSGenerationError,
     VOICE_ID,
+    VoiceScaleFilter,
     AUDIO_CLEANUP_DELAY_SECONDS,
     AUDIO_CLEANUP_RETRY_SECONDS,
     _compile_audio_files,
@@ -31,6 +32,7 @@ from TTS.chatbot import (
     _schedule_audio_file_cleanup,
     _send_local_audio_to_obs,
     _start_media_playback,
+    set_scale_to_sound_filter,
     send_audio_sequence_to_obs,
     send_audio_to_obs,
     url_tts,
@@ -62,6 +64,7 @@ class TTSFormTests(TestCase):
             obs_patch = patch(target)
             setattr(self, target.rsplit(".", 1)[1], obs_patch.start())
             self.addCleanup(obs_patch.stop)
+        self.wait_for_obs_playback_end.return_value = "OBS_MEDIA_STATE_ENDED"
 
     def test_get_displays_message_form(self):
         response = self.client.get(reverse("listings"))
@@ -97,7 +100,10 @@ class TTSFormTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         generate_audio.assert_called_once_with("Bonjour", VOICE_ID)
-        send_to_obs.assert_called_once_with("https://example.com/generated.wav")
+        self.assertEqual(
+            send_to_obs.call_args.args, ("https://example.com/generated.wav",)
+        )
+        self.assertTrue(callable(send_to_obs.call_args.kwargs["before_playback"]))
         self.assertContains(response, "https://example.com/generated.wav")
 
     @patch("listings.playback.send_audio_sequence_to_obs")
@@ -125,13 +131,17 @@ class TTSFormTests(TestCase):
                 ((" after ", VOICE_ID), {}),
             ],
         )
-        send_sequence_to_obs.assert_called_once_with(
+        self.assertEqual(
+            send_sequence_to_obs.call_args.args[0],
             [
                 "https://example.com/before.wav",
                 self.sound_bite_directory / "bruh.mp3",
                 "https://example.com/after.wav",
                 self.sound_bite_directory / "wasted.mp3",
-            ]
+            ],
+        )
+        self.assertTrue(
+            callable(send_sequence_to_obs.call_args.kwargs["before_playback"])
         )
 
     @patch("listings.playback.url_tts")
@@ -145,8 +155,12 @@ class TTSFormTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        send_sequence_to_obs.assert_called_once_with(
-            [self.sound_bite_directory / "bruh.mp3"]
+        self.assertEqual(
+            send_sequence_to_obs.call_args.args[0],
+            [self.sound_bite_directory / "bruh.mp3"],
+        )
+        self.assertTrue(
+            callable(send_sequence_to_obs.call_args.kwargs["before_playback"])
         )
         generate_audio.assert_not_called()
 
@@ -175,12 +189,13 @@ class TTSFormTests(TestCase):
                 (("Brian speaks", "0993f688-6719-4cf6-9769-fee7b77b1df5"), {}),
             ],
         )
-        send_sequence_to_obs.assert_called_once_with(
+        self.assertEqual(
+            [call.args[0] for call in send_sequence_to_obs.call_args_list],
             [
-                "https://example.com/default.wav",
-                "https://example.com/adam.wav",
-                "https://example.com/brian.wav",
-            ]
+                ["https://example.com/default.wav"],
+                ["https://example.com/adam.wav"],
+                ["https://example.com/brian.wav"],
+            ],
         )
         # Les images des trois voix sont affichées ensemble, dès le début.
         # L'animation reçoit les trois voix, dans l'ordre du message.
@@ -258,8 +273,12 @@ class TTSFormTests(TestCase):
         generate_audio.assert_called_once_with(
             "Salut", "c4ad44ae-8da9-4375-90c0-55a1e6f1fbc6"
         )
-        send_sequence_to_obs.assert_called_once_with(
-            [self.sound_bite_directory / "bruh.mp3", "https://example.com/adam.wav"]
+        self.assertEqual(
+            [call.args[0] for call in send_sequence_to_obs.call_args_list],
+            [
+                [self.sound_bite_directory / "bruh.mp3"],
+                ["https://example.com/adam.wav"],
+            ],
         )
 
     def test_sound_named_like_a_voice_is_rejected(self):
@@ -844,6 +863,61 @@ class OBSSettingsTests(TestCase):
         ):
             with self.assertRaisesRegex(TTSGenerationError, "missing or invalid"):
                 _load_obs_settings()
+
+    def test_scale_to_sound_filter_targets_the_voice_image_source(self):
+        client = MagicMock()
+        with (
+            patch("TTS.chatbot._obs_client", client),
+            patch("TTS.chatbot.connect_to_obs"),
+            patch(
+                "TTS.chatbot._load_obs_settings",
+                return_value=("localhost", 4455, "", "TTS Audio"),
+            ),
+        ):
+            set_scale_to_sound_filter("Adam", True)
+
+        client.set_source_filter_enabled.assert_called_once_with(
+            "Adam OBS Image", "Scale To Sound", True
+        )
+
+    def test_scale_to_sound_filter_switches_off_the_previous_voice(self):
+        with patch("TTS.chatbot.set_scale_to_sound_filter") as set_filter:
+            voice_filter = VoiceScaleFilter()
+            voice_filter.activate("SpongeBob")
+            voice_filter.activate("Shadow")
+            voice_filter.stop()
+
+        self.assertEqual(
+            set_filter.call_args_list,
+            [
+                call("SpongeBob", True),
+                call("SpongeBob", False),
+                call("Shadow", True),
+                call("Shadow", False),
+            ],
+        )
+
+    def test_pre_playback_callback_runs_before_obs_starts_the_media(self):
+        events = []
+        client = MagicMock()
+        client.get_version.return_value = SimpleNamespace(platform="linux")
+        client.set_input_settings.side_effect = lambda *a, **k: events.append("settings")
+        start_playback = MagicMock(side_effect=lambda *a: events.append("play"))
+        with (
+            TemporaryDirectory() as directory,
+            patch("TTS.chatbot._obs_client", client),
+            patch("TTS.chatbot.connect_to_obs"),
+            patch("TTS.chatbot._start_media_playback", start_playback),
+        ):
+            audio_path = Path(directory) / "audio.wav"
+            audio_path.touch()
+            _send_local_audio_to_obs(
+                audio_path,
+                ("localhost", 4455, "", "TTS Audio"),
+                lambda: events.append("filter"),
+            )
+
+        self.assertEqual(events, ["settings", "filter", "play"])
 
 
 class AudioFileTests(TestCase):
