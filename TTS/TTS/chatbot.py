@@ -208,7 +208,7 @@ def stop_obs_playback() -> None:
 
 
 # --- Images des voix -----------------------------------------------------------
-# Pendant un clip, OBS affiche les images de toutes les voix du message, dès le
+# Pendant un TTS, OBS affiche les images de toutes les voix du message, dès le
 # début, puis les masque toutes à la fin. Chaque image est
 # une source de la scène dédiée (``[images] scene`` dans TTS/config file,
 # « TTS Image » par défaut), nommée « <voix> OBS Image » : « Adam OBS Image »,
