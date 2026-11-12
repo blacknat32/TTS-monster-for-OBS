@@ -7,3 +7,4 @@ myenv/
 TTS/TTS/config file
 .env
 test-reports/
+db.sqlite3-*

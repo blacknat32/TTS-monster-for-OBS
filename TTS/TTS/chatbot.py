@@ -134,6 +134,68 @@ def _start_media_playback(client: Any, input_name: str) -> None:
         )
 
 
+# --- Ajouts pour le bot Twitch ------------------------------------------------
+# Le worker du bot joue les clips à la suite : il doit savoir quand un clip est
+# fini avant d'envoyer le suivant à la source média, et le bouton « Passer »
+# du panneau doit pouvoir couper le clip en cours.
+
+# États de la source média d'OBS pendant lesquels un clip est encore en cours.
+ACTIVE_MEDIA_STATES = {
+    "OBS_MEDIA_STATE_OPENING",
+    "OBS_MEDIA_STATE_BUFFERING",
+    "OBS_MEDIA_STATE_PLAYING",
+}
+
+
+def wait_for_obs_playback_end(
+    timeout_seconds: float = 300, poll_seconds: float = 0.25
+) -> None:
+    """Attend que la source média d'OBS ait fini (ou arrêté) de jouer le clip.
+
+    Interroge OBS toutes les ``poll_seconds`` secondes. Au bout de
+    ``timeout_seconds`` (5 minutes par défaut), on abandonne l'attente pour
+    ne jamais bloquer la file indéfiniment.
+    """
+    _, _, _, input_name = _load_obs_settings()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with _obs_lock:
+                connect_to_obs()
+                client = _obs_client
+                if client is None:
+                    return
+                media_state = client.get_media_input_status(input_name).media_state
+        except TTSGenerationError:
+            raise
+        except Exception as exc:
+            disconnect_from_obs()
+            raise TTSGenerationError(
+                f"Lost the OBS connection while waiting for playback: {exc}"
+            ) from exc
+        if media_state not in ACTIVE_MEDIA_STATES:
+            return
+        time.sleep(poll_seconds)
+    logger.warning("Playback did not end after %s seconds; moving on.", timeout_seconds)
+
+
+def stop_obs_playback() -> None:
+    """Coupe le clip en cours dans OBS (bouton « Passer » du panneau)."""
+    _, _, _, input_name = _load_obs_settings()
+    try:
+        with _obs_lock:
+            connect_to_obs()
+            if _obs_client is not None:
+                _obs_client.trigger_media_input_action(
+                    input_name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"
+                )
+    except TTSGenerationError:
+        raise
+    except Exception as exc:
+        disconnect_from_obs()
+        raise TTSGenerationError(f"OBS could not stop the clip: {exc}") from exc
+
+
 def _get_obs_local_file_path(audio_path: Path, obs_platform: str) -> str:
     resolved_path = audio_path.resolve()
     local_file = resolved_path.as_posix()

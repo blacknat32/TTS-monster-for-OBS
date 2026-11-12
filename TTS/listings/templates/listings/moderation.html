@@ -1,0 +1,84 @@
+{% comment %}
+  Panneau de modération (/moderation/), vue moderation_panel dans views.py.
+  De haut en bas : interrupteurs rapides, file des demandes (fragment
+  _moderation_queue.html, rechargé toutes les 3 s par moderation.js),
+  connexion Twitch, puis formulaire des réglages.
+{% endcomment %}
+{% load static %}
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Modération — Brain-Rot Simulator</title>
+    <link rel="stylesheet" href="{% static 'listings/style.css' %}">
+  </head>
+  <body>
+    <main>
+      <header class="page-header">
+        <h1>Brain-Rot <span>Modération</span></h1>
+        <p class="subtitle">
+          Les demandes du chat Twitch arrivent ici.
+          <a class="link" href="{% url 'listings' %}">Envoyer un message soi-même →</a>
+        </p>
+      </header>
+
+      {% for message in messages %}
+        <p class="card {% if message.tags == 'error' %}alert{% else %}notice{% endif %}" role="status">{{ message }}</p>
+      {% endfor %}
+
+      <section class="card" aria-label="Interrupteurs">
+        <div class="toggles">
+          {% include "listings/_toggle.html" with field="auto_approve" value=settings.auto_approve on="Validation automatique" off="Validation manuelle" hint="Auto : les demandes partent dans la file sans vérification (sauf mot interdit)." %}
+          {% include "listings/_toggle.html" with field="accept_requests" value=settings.accept_requests on="Demandes ouvertes" off="Demandes fermées" hint="Fermées : les nouvelles demandes du chat sont ignorées." %}
+          {% include "listings/_toggle.html" with field="playback_paused" value=settings.playback_paused on="Lecture en pause" off="Lecture active" hint="En pause : les demandes validées attendent." danger=True %}
+        </div>
+      </section>
+
+      <div id="queue" data-url="{% url 'moderation_queue' %}">
+        {% include "listings/_moderation_queue.html" %}
+      </div>
+
+      <section class="card" aria-label="Connexion Twitch">
+        <h2 class="card-title">Connexion Twitch</h2>
+        {% if connection.login %}
+          <div class="form-row">
+            <span>Connecté en tant que <strong>{{ connection.login }}</strong></span>
+            <form method="post" action="{% url 'twitch_disconnect' %}">
+              {% csrf_token %}
+              <button class="button button-ghost" type="submit">Déconnecter</button>
+            </form>
+          </div>
+        {% else %}
+          <p class="empty">
+            Crée une application sur <a class="link" href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv</a>
+            avec l'URL de redirection <code>{{ twitch_redirect_uri }}</code>, renseigne
+            <code>TWITCH_CLIENT_ID</code> et <code>TWITCH_CLIENT_SECRET</code> dans <code>.env</code>, puis :
+          </p>
+          <p><a class="send-button" href="{% url 'twitch_connect' %}">Connecter Twitch</a></p>
+        {% endif %}
+      </section>
+
+      <form class="card settings" method="post" action="{% url 'moderation' %}">
+        {% csrf_token %}
+        <h2 class="card-title">Réglages</h2>
+        {{ settings_form.non_field_errors }}
+        <div class="settings-grid">
+          {% for field in settings_form %}
+            <div class="setting{% if field.field.widget.input_type == 'checkbox' %} setting-check{% endif %}">
+              {{ field.label_tag }}
+              {{ field }}
+              {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+              {% if field.errors %}<div class="field-errors">{{ field.errors }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <div class="form-row">
+          <span></span>
+          <button class="send-button" type="submit">Enregistrer</button>
+        </div>
+      </form>
+    </main>
+    <script src="{% static 'listings/moderation.js' %}" defer></script>
+  </body>
+</html>

@@ -16,6 +16,11 @@ clic.
 > SpongeBob dit « Salut le chat ! », on entend le *vine boom*, puis Kermit dit
 > « Bienvenue dans le stream. »
 
+Tes **viewers Twitch** peuvent aussi l'utiliser : ils tapent `!tts …` dans le
+chat (ou utilisent une récompense de points de chaîne), et tu gardes le
+contrôle depuis un **panneau de modération**, en validation manuelle ou
+automatique. Voir [Bot Twitch et modération](#bot-twitch-et-modération).
+
 ## Sommaire
 
 - [Fonctionnalités](#fonctionnalités)
@@ -24,6 +29,7 @@ clic.
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Utilisation](#utilisation)
+- [Bot Twitch et modération](#bot-twitch-et-modération)
 - [Mettre à jour le projet](#mettre-à-jour-le-projet)
 - [Dépannage](#dépannage)
 - [Pour les développeurs](#pour-les-développeurs)
@@ -45,6 +51,10 @@ clic.
   même message deux fois.
 - **Nettoyage automatique** des clips générés. Les sons de `Sound_Bites` ne sont
   jamais supprimés.
+- **Bot Twitch** : les viewers lancent des TTS avec une commande du chat
+  (`!tts`) ou une récompense de points de chaîne.
+- **Panneau de modération** : validation manuelle ou automatique, file de
+  lecture, historique, mots interdits, cooldown et bannissement.
 
 ## Comment ça marche
 
@@ -264,6 +274,124 @@ Deux règles à respecter :
 - deux sons ne peuvent pas porter le même nom avec des extensions différentes
   (ex. `bruh.mp3` et `bruh.wav`).
 
+## Bot Twitch et modération
+
+Les viewers envoient leurs demandes **depuis le chat Twitch** ; tout tourne sur
+ton PC, à côté d'OBS. Aucune URL publique n'est nécessaire.
+
+```
+ Chat Twitch : !tts {Kermit} Salut {bruh}      ou      récompense de points de chaîne
+        │  EventSub (WebSocket)
+        ▼
+ Bot (manage.py twitch_bot) ── droits, cooldown, bannis, mots interdits
+        │
+        ├─ mode manuel ──▶ « À valider » ──▶ tu approuves ou refuses dans le panneau
+        └─ mode auto ────▶ directement dans la file de lecture
+                                  │
+                                  ▼
+          un clip à la fois dans OBS (le suivant attend la fin du précédent)
+```
+
+### Configurer Twitch (une seule fois)
+
+1. Va sur [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps) →
+   **Register Your Application** :
+   - *OAuth Redirect URLs* : `http://localhost:8000/twitch/callback/`
+   - *Category* : *Chat Bot* ; *Client Type* : **Confidential**
+2. Copie le *Client ID* et génère un *Client Secret*, puis ajoute-les dans `.env` :
+
+   ```
+   TWITCH_CLIENT_ID=ton_client_id
+   TWITCH_CLIENT_SECRET=ton_client_secret
+   ```
+
+3. Mets à jour la base : `python TTS/manage.py migrate`.
+4. Lance le serveur, ouvre
+   [http://localhost:8000/moderation/](http://localhost:8000/moderation/) et
+   clique sur **Connecter Twitch**. Connecte-toi avec **le compte de ta chaîne**.
+
+> Ouvre bien le panneau via `localhost` (et pas `127.0.0.1`) : Twitch renvoie
+> vers l'URL de redirection exacte déclarée à l'étape 1.
+
+### Pendant le stream
+
+Il faut **deux terminaux** (venv activé dans chacun) :
+
+```bash
+python TTS/manage.py runserver
+```
+
+```bash
+python TTS/manage.py twitch_bot
+```
+
+Le premier sert le panneau, le second écoute Twitch **et joue les clips dans
+OBS**. Le panneau affiche « ● Bot actif » quand le second tourne.
+
+> Sans le bot, les demandes s'accumulent dans le panneau mais **rien n'est joué**.
+
+### Côté viewers
+
+Dans le chat, la commande suivie du message (mêmes balises que sur la page
+`/message/`) :
+
+```
+!tts {Kermit} Salut le stream ! {vine-boom}
+```
+
+Avec une récompense de points de chaîne, le viewer écrit simplement son message
+(avec ou sans balises) dans la zone de texte de la récompense.
+
+Pour leur indiquer les voix et sons disponibles, tu peux par exemple ajouter
+une commande `!sons` dans ton bot de chat habituel avec la liste des balises.
+
+### Choisir entre validation manuelle et automatique
+
+| Mode | Ce qui se passe | Quand l'utiliser |
+|---|---|---|
+| **Manuel** (par défaut) | Chaque demande attend dans « À valider » jusqu'à ce que tu cliques sur *Approuver*. | Grosse audience, ou quand tu peux garder un œil sur le panneau (ou un modo le fait). |
+| **Automatique** | Les demandes partent directement dans la file de lecture. | Petite communauté de confiance, ou commande réservée aux abonnés / VIP. |
+
+Dans les deux modes, une demande avec un **mot interdit** attend ta
+validation. Pense à remplir la liste *Mots interdits* avant de passer en
+automatique.
+
+Pour tester sans Twitch (par exemple le bouton *Rejouer*) :
+`python TTS/manage.py twitch_bot --no-twitch`.
+
+### Le panneau (`/moderation/`)
+
+- **Interrupteurs** :
+  - *Validation manuelle / automatique* : en auto, les demandes partent
+    directement dans la file, sans vérification. Une demande qui contient un
+    **mot interdit reste toujours à valider à la main**.
+  - *Demandes ouvertes / fermées* : coupe le TTS d'un clic.
+  - *Lecture active / en pause* : les demandes validées attendent.
+- **À valider** : Approuver, Refuser ou Bannir le viewer.
+- **File de lecture** : *Passer* coupe le clip en cours dans OBS ; *Retirer*
+  enlève un clip en attente.
+- **Historique** : les 50 derniers clips joués, refusés ou en échec, avec
+  *Rejouer*.
+- **Réglages** : commande du chat, qui peut l'utiliser (tout le monde, abonnés,
+  VIP, modos), récompense de points de chaîne, cooldown par viewer, longueur
+  maximale, confiance aux modos, mots interdits, viewers bannis.
+
+Les demandes des modos et du streamer sont validées d'office si *Faire
+confiance aux modos* est coché.
+
+### Points de chaîne
+
+Les récompenses de points de chaîne sont réservées aux comptes **affiliés ou
+partenaires**. Dans le tableau de bord Twitch, crée une récompense avec
+**« Exiger une saisie de texte du viewer »**, puis recopie son titre exact dans
+*Réglages → Récompense de points de chaîne*.
+
+### Limites
+
+- Le bot ne répond pas dans le chat (pas de message « cooldown » ou « refusé »).
+- Une récompense refusée n'est pas remboursée automatiquement en points.
+- Le panneau n'a pas de mot de passe : il est prévu pour rester en local.
+
 ## Mettre à jour le projet
 
 Récupère les dernières modifications, active le venv (voir
@@ -297,7 +425,7 @@ l'ancien CSS en cache.
 |---|---|
 | `No module named 'django'` / `'obsws_python'` / `'dotenv'` | Le venv n'est pas activé, ou les dépendances ne sont pas à jour : `python -m pip install -r requirements.txt`. |
 | `no such table: django_session` | Lance `python TTS/manage.py migrate`. |
-| « Page not found » sur `http://127.0.0.1:8000/` | Normal : l'application est sur `/message/`. |
+| Quelle adresse ouvrir ? | `/moderation/` pour le panneau (l'adresse racine `/` y redirige), `/message/` pour envoyer un message toi-même. |
 | L'ancien design s'affiche | Recharge sans cache : `Ctrl + Shift + R` (`Cmd + Shift + R` sur macOS). |
 | `python: command not found` (Linux / macOS) | Le venv n'est pas activé : `source myenv/bin/activate`. Hors venv, utilise `python3`. |
 
@@ -310,6 +438,19 @@ l'ancien CSS en cache.
 | `FFmpeg is required…` | Les dépendances ne sont pas à jour : `python -m pip install -r requirements.txt`. |
 | `Balise inconnue : {…}` | La balise ne correspond à aucune voix ni à aucun son. Vérifie l'orthographe. |
 | « Ce clip a déjà été joué » | Le même message a déjà été envoyé pendant cette session. Modifie-le légèrement. |
+
+### Bot Twitch
+
+| Symptôme | Solution |
+|---|---|
+| `TWITCH_CLIENT_ID et TWITCH_CLIENT_SECRET doivent être renseignés` | Ajoute-les dans `.env`, puis relance le serveur. |
+| Twitch affiche `redirect_mismatch` | L'URL de redirection de ton application Twitch doit être exactement `http://localhost:8000/twitch/callback/` (ou la valeur de `TWITCH_REDIRECT_URI`). |
+| « La réponse de Twitch ne correspond pas à la demande » | Recommence depuis le bouton *Connecter Twitch* du panneau, ouvert via `localhost`. |
+| Le panneau affiche « ○ Bot arrêté » | Lance `python TTS/manage.py twitch_bot` dans un second terminal. |
+| `!tts` ne crée aucune demande | Vérifie la commande et *Qui peut utiliser la commande* dans les réglages, le cooldown, la liste des bannis et l'interrupteur *Demandes ouvertes*. Le terminal du bot indique pourquoi une demande est ignorée. |
+| Les points de chaîne ne font rien | Le titre de la récompense doit être recopié exactement dans les réglages, et la récompense doit demander une saisie de texte. Réservé aux affiliés et partenaires. |
+| Les demandes restent « En file » | Le bot est arrêté, ou la lecture est en pause. |
+| `Abonnement … refusé par Twitch (HTTP 403)` | Reconnecte Twitch depuis le panneau avec le compte de ta chaîne. |
 
 ## Pour les développeurs
 
@@ -331,10 +472,17 @@ TTS-monster-for-OBS/
     │   └── urls.py
     ├── listings/
     │   ├── form.py               # formulaire, liste des voix, analyse des balises
-    │   ├── views.py              # traitement du message et file d'attente
-    │   ├── templates/listings/index.html
-    │   ├── static/listings/      # style.css et prompt-tags.js
-    │   └── tests.py
+    │   ├── playback.py           # message + balises → audio dans OBS
+    │   ├── models.py             # demandes TTS, réglages, connexion Twitch
+    │   ├── moderation.py         # règles d'entrée dans la file (auto / manuel)
+    │   ├── twitch.py             # OAuth et EventSub (chat, points de chaîne)
+    │   ├── worker.py             # lecture des demandes validées, une par une
+    │   ├── management/commands/twitch_bot.py
+    │   ├── views.py              # page /message/ et panneau /moderation/
+    │   ├── templates/listings/
+    │   ├── static/listings/      # style.css, prompt-tags.js, moderation.js
+    │   ├── tests.py
+    │   └── tests_moderation.py
     └── media/
         ├── Sound_Bites/          # effets sonores utilisables en balise
         └── tts/                  # clips générés (temporaires, ignorés par Git)
@@ -382,8 +530,8 @@ les tests passent. Pour travailler :
 
 ## Idées pour la suite
 
-- **Bot Twitch** : permettre aux spectateurs de lancer des TTS depuis le chat
-  (commande, points de chaîne ou bits), avec file d'attente et modération.
+- **Bot Twitch** : réponses dans le chat, remboursement des récompenses
+  refusées, déclenchement par bits.
 - **Images réactives** affichées dans OBS pendant la lecture (liées à la voix ou
   choisies par l'utilisateur).
 - **Indicateur de connexion OBS** dans l'interface.

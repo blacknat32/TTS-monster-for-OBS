@@ -5,6 +5,8 @@ from django import forms
 
 from TTS.chatbot import VOICE_ID
 
+from .models import ModerationSettings
+
 
 SOUND_BITE_DIRECTORY = Path(__file__).resolve().parents[1] / "media" / "Sound_Bites"
 SOUND_BITE_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
@@ -103,3 +105,36 @@ class PromptForm(forms.Form):
             self.add_error("message", "Ajoutez du texte ou une balise de son.")
 
         return cleaned_data
+
+
+class ModerationSettingsForm(forms.ModelForm):
+    """Formulaire « Réglages » en bas du panneau de modération.
+
+    Les trois interrupteurs du haut du panneau (mode auto, demandes ouvertes,
+    pause) n'en font pas partie : ils ont chacun leur bouton.
+    """
+
+    class Meta:
+        model = ModerationSettings
+        fields = [
+            "chat_command",
+            "chat_access",
+            "reward_title",
+            "user_cooldown_seconds",
+            "max_message_length",
+            "trust_moderators",
+            "banned_words",
+            "banned_users",
+        ]
+        widgets = {
+            "banned_words": forms.Textarea(attrs={"rows": 4}),
+            "banned_users": forms.Textarea(attrs={"rows": 4}),
+        }
+
+    def clean_max_message_length(self):
+        """La limite ne peut pas dépasser celle du formulaire de message (1000)."""
+        value = self.cleaned_data["max_message_length"]
+        max_allowed = PromptForm.base_fields["message"].max_length
+        if not 1 <= value <= max_allowed:
+            raise forms.ValidationError(f"Entre 1 et {max_allowed} caractères.")
+        return value
