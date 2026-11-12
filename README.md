@@ -224,36 +224,61 @@ serveur WebSocket → Afficher les informations de connexion**.
 
 ### Images des voix (facultatif)
 
-Pendant un TTS, OBS peut afficher une image pour chaque voix du message :
-elles apparaissent toutes au début du clip et disparaissent à la fin.
+Pendant un TTS, OBS peut afficher une image pour chaque voix du message, avec
+une animation : les images **montent du bas de l'écran une par une**, puis
+**redescendent ensemble** à la fin du clip.
 
-1. Crée une scène nommée **`TTS Image`** (ou le nom choisi dans `[images] scene` du
-   `config file`).
+1. Crée une scène nommée **`TTS Image`** (ou le nom choisi dans
+   `[images] scene` du `config file`).
 2. Dans cette scène, ajoute une source image par voix, nommée **le nom exact
-   de la voix + ` OBS Image`** : `Adam OBS Image`, `Kermit OBS Image`,
-   `SpongeBob OBS Image`… **Masque-les** (icône 👁), et place-les à des
-   endroits différents : plusieurs peuvent être affichées en même temps.
-   Les majuscules, espaces et signes de ponctuation ne comptent pas :
-   `adam obs image` ou `Adam_OBS_Image` marchent aussi.
-3. Ajoute la scène `TTS Image` comme **source** dans ta scène de stream
-   (*+ → Scène → TTS Image*), au-dessus de ta webcam et de ton jeu.
+   de la voix + ` OBS Image`** : `Adam OBS Image`, `Shadow OBS Image`,
+   `SpongeBob OBS Image`… Les majuscules, espaces et signes de ponctuation ne
+   comptent pas : `adam obs image` ou `Adam_OBS_Image` marchent aussi.
+3. **Place chaque image à l'endroit où elle doit s'arrêter** en montant (sa
+   hauteur finale), à des endroits différents pour qu'elles ne se superposent
+   pas, puis **masque-les** (icône 👁).
+4. Ajoute la scène `TTS Image` comme **source** dans ta scène de stream
+   (*+ → Scène → TTS Image*), au-dessus de ta webcam et de ton jeu, en plein
+   écran.
 
-Ensuite, pour chaque message :
+Déroulement d'un TTS, par exemple `!tts SpongeBob: Salut Shadow: Yo` :
 
-- les images de **toutes les voix du message** s'affichent dès le début :
-  avec `Kermit: Salut Adam: Coucou`, `Kermit OBS Image` et `Adam OBS Image`
-  apparaissent ensemble ;
-- le texte placé avant toute voix est dit par SpongeBob : dans ce cas,
-  `SpongeBob OBS Image` s'affiche aussi ;
-- à la fin du clip, ou avec le bouton *Passer* du panneau, toutes les images
-  sont masquées.
+1. le son démarre ;
+2. `SpongeBob OBS Image` monte du bas de l'écran jusqu'à sa place ;
+3. 1 seconde plus tard, `Shadow OBS Image` monte à son tour ;
+4. à la fin du clip (ou avec *Passer*), les deux images redescendent ensemble
+   sous l'écran en 3 secondes, puis sont masquées et **remises exactement à
+   leur place** dans OBS.
 
-Une voix sans image ne pose aucun problème : rien ne s'affiche, le son est joué
-normalement. Les autres sources de la scène (texte, cadre…) ne sont pas
-touchées.
+Bon à savoir :
 
-> La page `/message/` attend maintenant la fin du clip avant de se recharger,
-> pour pouvoir masquer les images à la fin.
+- le texte placé avant toute voix est dit par SpongeBob : son image monte
+  donc aussi dans ce cas ;
+- si le clip se termine avant que toutes les images soient montées, celles
+  qui n'ont pas encore commencé ne montent pas ;
+- une voix sans image ne pose aucun problème, et les autres sources de la
+  scène (texte, cadre…) ne sont jamais touchées.
+
+#### Régler les durées
+
+Dans `TTS/TTS/config file`, section `[images]` (relance ensuite
+`python TTS/manage.py stream`) :
+
+```toml
+[images]
+scene = "TTS Image"
+rise_delay = 1.0      # secondes entre la montée de deux images (0 = toutes ensemble)
+rise_duration = 0.6   # secondes pour qu'une image monte
+fall_duration = 3.0   # secondes pour que les images redescendent
+```
+
+Une ligne absente utilise la valeur par défaut. Les valeurs par défaut et les
+explications détaillées sont dans `TTS/TTS/chatbot.py`, dans le cadre
+« RÉGLAGES DES IMAGES ET DES ANIMATIONS » (ainsi que la fluidité de
+l'animation, `ANIMATION_FPS`).
+
+> La page `/message/` attend la fin du clip avant de se recharger, pour
+> pouvoir faire redescendre les images à la fin.
 
 ## Utilisation
 

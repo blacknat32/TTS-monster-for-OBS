@@ -586,16 +586,17 @@ class SimpleSyntaxTests(SoundBiteDirectoryMixin, TestCase):
 
 
 class VoiceImageTests(TestCase):
-    """Images des voix : toutes affichées dès le début, masquées à la fin."""
+    """play_message lance l'animation des images au bon moment."""
 
     def setUp(self):
         self.patches = {}
         for name in ("url_tts", "send_audio_to_obs", "send_audio_sequence_to_obs",
-                     "show_voice_images", "hide_voice_images", "wait_for_obs_playback_end"):
+                     "VoiceImageAnimation", "wait_for_obs_playback_end"):
             patcher = patch(f"listings.playback.{name}")
             self.patches[name] = patcher.start()
             self.addCleanup(patcher.stop)
         self.patches["url_tts"].side_effect = lambda text, voice: f"url:{text.strip()}"
+        self.animation = self.patches["VoiceImageAnimation"].return_value
 
     def play(self, message):
         from .form import PromptForm
@@ -609,39 +610,36 @@ class VoiceImageTests(TestCase):
         play_message(form.cleaned_data["message"], form.sound_bite_tags, form.voice_tags)
         return directory
 
-    def shown(self):
-        self.patches["show_voice_images"].assert_called_once()
-        return self.patches["show_voice_images"].call_args.args[0]
+    def voices(self):
+        return self.patches["VoiceImageAnimation"].call_args.args[0]
 
-    def test_plain_message_shows_default_voice_image(self):
+    def test_plain_message_animates_default_voice(self):
         self.play("Bonjour")
 
-        self.assertEqual(self.shown(), ["SpongeBob"])
+        self.assertEqual(self.voices(), ["SpongeBob"])
         self.patches["send_audio_to_obs"].assert_called_once_with("url:Bonjour")
-        self.patches["hide_voice_images"].assert_called_once()
 
-    def test_all_voices_are_shown_together_and_audio_is_one_clip(self):
-        directory = self.play("Salut (bruh) Kermit: Coucou Adam: Yo Kermit: Re")
+    def test_voices_in_message_order_and_audio_is_one_clip(self):
+        directory = self.play("Salut (bruh) Shadow: Coucou Adam: Yo Shadow: Re")
 
         # Chaque voix une seule fois, dans l'ordre d'apparition.
-        self.assertEqual(self.shown(), ["SpongeBob", "Kermit", "Adam"])
+        self.assertEqual(self.voices(), ["SpongeBob", "Shadow", "Adam"])
         self.patches["send_audio_sequence_to_obs"].assert_called_once_with(
             ["url:Salut", directory / "bruh.mp3", "url:Coucou", "url:Yo", "url:Re"]
         )
-        self.patches["hide_voice_images"].assert_called_once()
 
-    def test_images_are_shown_before_and_hidden_after_the_clip(self):
+    def test_images_rise_once_the_clip_has_started_and_fall_at_the_end(self):
         events = []
-        self.patches["show_voice_images"].side_effect = lambda *a: events.append("show")
         self.patches["send_audio_to_obs"].side_effect = lambda *a: events.append("play")
+        self.animation.start.side_effect = lambda: events.append("rise")
         self.patches["wait_for_obs_playback_end"].side_effect = lambda *a: events.append("wait")
-        self.patches["hide_voice_images"].side_effect = lambda *a: events.append("hide")
+        self.animation.stop.side_effect = lambda: events.append("fall")
 
         self.play("Bonjour")
 
-        self.assertEqual(events, ["show", "play", "wait", "hide"])
+        self.assertEqual(events, ["play", "rise", "wait", "fall"])
 
-    def test_images_are_hidden_even_when_playback_fails(self):
+    def test_images_are_lowered_even_when_playback_fails(self):
         from TTS.chatbot import TTSGenerationError
 
         self.patches["send_audio_to_obs"].side_effect = TTSGenerationError("OBS absent")
@@ -649,85 +647,163 @@ class VoiceImageTests(TestCase):
         with self.assertRaises(TTSGenerationError):
             self.play("Bonjour")
 
-        self.patches["hide_voice_images"].assert_called_once()
+        self.animation.start.assert_not_called()
+        self.animation.stop.assert_called_once()
 
 
-class ObsVoiceImageTests(TestCase):
-    """show_voice_image pilote les sources « <voix> OBS Image » de la scène dédiée."""
+class FakeObs:
+    """Faux client OBS : une scène, des sources, des positions."""
 
-    def items(self):
+    def __init__(self, sources):
+        # sources : {nom: (id, visible, positionY, hauteur)}
+        self.items = {
+            item_id: {"sourceName": name, "sceneItemId": item_id,
+                      "sceneItemEnabled": visible, "positionY": y, "height": height}
+            for name, (item_id, visible, y, height) in sources.items()
+        }
+        self.calls = []
+
+    def get_video_settings(self):
+        return SimpleNamespace(base_height=1080)
+
+    def get_scene_item_list(self, scene):
         return SimpleNamespace(scene_items=[
-            {"sourceName": "Adam OBS Image", "sceneItemId": 1, "sceneItemEnabled": True},
-            # Majuscules et ponctuation différentes : reconnue quand même.
-            {"sourceName": "kermit, OBS-image", "sceneItemId": 2, "sceneItemEnabled": False},
-            {"sourceName": "Webcam", "sceneItemId": 3, "sceneItemEnabled": True},
+            {key: item[key] for key in ("sourceName", "sceneItemId", "sceneItemEnabled")}
+            for item in self.items.values()
         ])
 
-    @patch("TTS.chatbot._load_image_scene", return_value="TTS Image")
-    @patch("TTS.chatbot.connect_to_obs")
-    def test_shows_wanted_image_and_hides_other_voices_only(self, connect, scene):
-        from TTS.chatbot import show_voice_images
+    def get_scene_item_transform(self, scene, item_id):
+        item = self.items[item_id]
+        return SimpleNamespace(scene_item_transform={
+            "positionY": item["positionY"], "height": item["height"],
+        })
 
-        client = MagicMock()
-        client.get_scene_item_list.return_value = self.items()
-        with patch("TTS.chatbot._obs_client", client):
-            show_voice_images(["Kermit"], ["Adam", "Kermit"])
+    def set_scene_item_enabled(self, scene, item_id, enabled):
+        self.items[item_id]["sceneItemEnabled"] = enabled
+        self.calls.append(("enabled", item_id, enabled))
 
-        client.get_scene_item_list.assert_called_once_with("TTS Image")
-        self.assertEqual(
-            client.set_scene_item_enabled.call_args_list,
-            [(("TTS Image", 1, False),), (("TTS Image", 2, True),)],
-        )
+    def set_scene_item_transform(self, scene, item_id, transform):
+        self.items[item_id]["positionY"] = transform["positionY"]
+        self.calls.append(("y", item_id, transform["positionY"]))
+
+
+class VoiceImageAnimationTests(TestCase):
+    """Montée une par une, descente ensemble, retour à la position d'origine."""
+
+    def setUp(self):
+        for target, kwargs in (
+            ("TTS.chatbot.connect_to_obs", {}),
+            ("TTS.chatbot._load_image_scene", {"return_value": "TTS Image"}),
+            ("TTS.chatbot.time.sleep", {}),  # pas de vraie attente entre deux images
+        ):
+            patcher = patch(target, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.obs = FakeObs({
+            "SpongeBob OBS Image": (1, False, 700.0, 200.0),
+            # Majuscules et ponctuation différentes : reconnue quand même.
+            "shadow, obs-image": (2, True, 650.0, 300.0),
+            "Adam OBS Image": (3, True, 600.0, 100.0),  # voix absente du message
+            "Webcam": (4, True, 0.0, 1080.0),  # autre source, jamais touchée
+        })
+        client_patch = patch("TTS.chatbot._obs_client", self.obs)
+        client_patch.start()
+        self.addCleanup(client_patch.stop)
+
+    def make_animation(self, voices, **durations):
+        from TTS.chatbot import VoiceImageAnimation
+
+        values = {"rise_delay": 0.0, "rise_duration": 0.1, "fall_duration": 0.1}
+        values.update(durations)
+        with patch("TTS.chatbot._load_duration", side_effect=lambda key, default: values[key]):
+            return VoiceImageAnimation(voices, ["SpongeBob", "Shadow", "Adam"])
+
+    def test_images_rise_in_order_then_fall_and_return_home(self):
+        animation = self.make_animation(["SpongeBob", "Shadow"])
+
+        animation.start()
+        animation._thread.join(timeout=5)
+        # Montées terminées : chaque image est à sa place et visible.
+        self.assertEqual(self.obs.items[1]["positionY"], 700.0)
+        self.assertEqual(self.obs.items[2]["positionY"], 650.0)
+        self.assertTrue(self.obs.items[1]["sceneItemEnabled"])
+        self.assertTrue(self.obs.items[2]["sceneItemEnabled"])
+        # L'image d'une voix absente du message est masquée.
+        self.assertFalse(self.obs.items[3]["sceneItemEnabled"])
+        # SpongeBob (1re voix) apparaît avant Shadow, chacune depuis le bas.
+        shown = [call for call in self.obs.calls if call[0] == "enabled" and call[2]]
+        self.assertEqual([call[1] for call in shown], [1, 2])
+        first_y = [call for call in self.obs.calls if call[0] == "y"]
+        self.assertEqual(first_y[0], ("y", 1, 1080.0 + 200.0))
+
+        animation.stop()
+
+        # Fin : masquées et remises exactement à leur place d'origine.
+        for item_id, home in ((1, 700.0), (2, 650.0)):
+            self.assertFalse(self.obs.items[item_id]["sceneItemEnabled"])
+            self.assertEqual(self.obs.items[item_id]["positionY"], home)
+        # La webcam n'a jamais été touchée.
+        self.assertFalse(any(call[1] == 4 for call in self.obs.calls))
+
+    def test_images_fall_together_below_the_screen(self):
+        animation = self.make_animation(["SpongeBob", "Shadow"])
+        animation.start()
+        animation._thread.join(timeout=5)
+        self.obs.calls.clear()
+
+        animation._fall_all()
+
+        # Dernière position de la descente : sous l'écran pour les deux images.
+        last = {}
+        for kind, item_id, value in self.obs.calls:
+            if kind == "y":
+                last[item_id] = value
+        self.assertEqual(last, {1: 1080.0 + 200.0, 2: 1080.0 + 300.0})
+
+    def test_clip_ending_early_skips_images_not_yet_risen(self):
+        # Décalage très long : la 2e image n'a pas le temps de monter.
+        animation = self.make_animation(["SpongeBob", "Shadow"], rise_delay=60.0)
+
+        animation.start()
+        animation.stop()
+
+        self.assertTrue(animation.images[0].shown)
+        self.assertFalse(animation.images[1].shown)
+        self.assertNotIn(("enabled", 2, True), self.obs.calls)
+        self.assertEqual(self.obs.items[2]["positionY"], 650.0)
+
+    def test_missing_scene_does_not_raise(self):
+        self.obs.get_scene_item_list = MagicMock(side_effect=RuntimeError("scene not found"))
+        animation = self.make_animation(["SpongeBob"])
+
+        animation.start()  # ne doit pas lever d'erreur
+        animation.stop()
+
+        self.assertEqual(animation.images, [])
+
+
+class ImagesConfigTests(TestCase):
+    def test_scene_and_durations_are_read_from_config_file(self):
+        from TTS import chatbot
+
+        with TemporaryDirectory() as directory:
+            config = Path(directory) / "config file"
+            config.write_text(
+                '[images]\nscene = "Mes images"\nrise_delay = 2\nfall_duration = "abc"\n',
+                encoding="utf-8",
+            )
+            with patch("TTS.chatbot.OBS_CONFIG_PATH", config):
+                self.assertEqual(chatbot._load_image_scene(), "Mes images")
+                self.assertEqual(chatbot._load_duration("rise_delay", 1.0), 2.0)
+                # Valeur invalide ou absente : valeur par défaut du code.
+                self.assertEqual(chatbot._load_duration("fall_duration", 3.0), 3.0)
+                self.assertEqual(chatbot._load_duration("rise_duration", 0.6), 0.6)
+
+            config.write_text('[audio]\ninput_name = "TTS Audio"\n', encoding="utf-8")
+            with patch("TTS.chatbot.OBS_CONFIG_PATH", config):
+                self.assertEqual(chatbot._load_image_scene(), "TTS Image")
 
     def test_source_name_for_a_voice(self):
         from TTS.chatbot import voice_image_source_name
 
         self.assertEqual(voice_image_source_name("Adam"), "Adam OBS Image")
-
-    @patch("TTS.chatbot._load_image_scene", return_value="TTS")
-    @patch("TTS.chatbot.connect_to_obs")
-    def test_missing_scene_does_not_raise(self, connect, scene):
-        from TTS.chatbot import show_voice_images
-
-        client = MagicMock()
-        client.get_scene_item_list.side_effect = RuntimeError("scene not found")
-        with patch("TTS.chatbot._obs_client", client):
-            show_voice_images(["Kermit"], ["Kermit"])  # ne doit pas lever d'erreur
-
-    @patch("TTS.chatbot._load_image_scene", return_value="TTS Image")
-    @patch("TTS.chatbot.connect_to_obs")
-    def test_several_images_are_shown_together_then_hidden(self, connect, scene):
-        from TTS.chatbot import hide_voice_images, show_voice_images
-
-        client = MagicMock()
-        items = self.items()
-        items.scene_items[0]["sceneItemEnabled"] = False  # Adam masquée au départ
-        client.get_scene_item_list.return_value = items
-        with patch("TTS.chatbot._obs_client", client):
-            show_voice_images(["Adam", "Kermit"], ["Adam", "Kermit"])
-            self.assertEqual(
-                client.set_scene_item_enabled.call_args_list,
-                [(("TTS Image", 1, True),), (("TTS Image", 2, True),)],
-            )
-
-            client.reset_mock()
-            items.scene_items[0]["sceneItemEnabled"] = True
-            items.scene_items[1]["sceneItemEnabled"] = True
-            hide_voice_images(["Adam", "Kermit"])
-            # La webcam (id 3) n'est jamais touchée.
-            self.assertEqual(
-                client.set_scene_item_enabled.call_args_list,
-                [(("TTS Image", 1, False),), (("TTS Image", 2, False),)],
-            )
-
-    def test_image_scene_is_read_from_config_file(self):
-        from TTS import chatbot
-
-        with TemporaryDirectory() as directory:
-            config = Path(directory) / "config file"
-            config.write_text('[images]\nscene = "Mes images"\n', encoding="utf-8")
-            with patch("TTS.chatbot.OBS_CONFIG_PATH", config):
-                self.assertEqual(chatbot._load_image_scene(), "Mes images")
-            config.write_text('[audio]\ninput_name = "TTS Audio"\n', encoding="utf-8")
-            with patch("TTS.chatbot.OBS_CONFIG_PATH", config):
-                self.assertEqual(chatbot._load_image_scene(), "TTS Image")

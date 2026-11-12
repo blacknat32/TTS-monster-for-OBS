@@ -53,14 +53,13 @@ class TTSFormTests(TestCase):
         form_directory_patch.start()
         self.addCleanup(form_directory_patch.stop)
 
-        # play_message attend la fin du clip et affiche les images des voix :
+        # play_message attend la fin du clip et anime les images des voix :
         # on simule OBS pour ces deux appels.
-        for target, value in (
-            ("listings.playback.wait_for_obs_playback_end", "OBS_MEDIA_STATE_ENDED"),
-            ("listings.playback.show_voice_images", None),
-            ("listings.playback.hide_voice_images", None),
+        for target in (
+            "listings.playback.wait_for_obs_playback_end",
+            "listings.playback.VoiceImageAnimation",
         ):
-            obs_patch = patch(target, return_value=value)
+            obs_patch = patch(target)
             setattr(self, target.rsplit(".", 1)[1], obs_patch.start())
             self.addCleanup(obs_patch.stop)
 
@@ -184,11 +183,13 @@ class TTSFormTests(TestCase):
             ]
         )
         # Les images des trois voix sont affichées ensemble, dès le début.
-        self.show_voice_images.assert_called_once()
+        # L'animation reçoit les trois voix, dans l'ordre du message.
+        self.VoiceImageAnimation.assert_called_once()
         self.assertEqual(
-            self.show_voice_images.call_args.args[0], ["SpongeBob", "Adam", "Brian"]
+            self.VoiceImageAnimation.call_args.args[0], ["SpongeBob", "Adam", "Brian"]
         )
-        self.hide_voice_images.assert_called_once()
+        self.VoiceImageAnimation.return_value.start.assert_called_once()
+        self.VoiceImageAnimation.return_value.stop.assert_called_once()
 
     def test_unknown_tag_is_rejected(self):
         response = self.client.post(

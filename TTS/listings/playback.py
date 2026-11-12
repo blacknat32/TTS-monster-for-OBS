@@ -12,10 +12,12 @@ Le message est découpé en **sections**, une par voix. Exemple :
     → section Kermit    : « Coucou », son vine-boom
 
 Les sections servent à savoir quelle voix lit quel texte, et quelles voix
-apparaissent dans le message. Les images de toutes ces voix (sources
-« SpongeBob OBS Image » et « Kermit OBS Image » ici) sont affichées dès le
-début du clip et masquées à la fin. Le son, lui, reste un seul clip assemblé.
-Voir ``show_voice_images`` / ``hide_voice_images`` dans ``TTS/chatbot.py``.
+apparaissent dans le message. Le son, lui, reste un seul clip assemblé.
+
+Dès que le clip démarre, les images de ces voix (sources « SpongeBob OBS
+Image » puis « Kermit OBS Image » ici) montent une par une du bas de l'écran,
+puis redescendent ensemble à la fin. L'animation et ses réglages (durées,
+décalage) sont dans ``VoiceImageAnimation``, dans ``TTS/chatbot.py``.
 """
 
 from dataclasses import dataclass, field
@@ -23,10 +25,9 @@ from pathlib import Path
 
 from TTS.chatbot import (
     VOICE_ID,
-    hide_voice_images,
+    VoiceImageAnimation,
     send_audio_sequence_to_obs,
     send_audio_to_obs,
-    show_voice_images,
     url_tts,
     wait_for_obs_playback_end,
 )
@@ -87,18 +88,20 @@ def play_message(
 ) -> str | None:
     """Joue le message dans OBS en un seul clip, avec les images de ses voix.
 
-    1. Les images de toutes les voix du message sont affichées.
-    2. Le clip est joué (texte et sons assemblés en un seul fichier).
+    1. Le clip est généré puis lancé dans OBS (texte et sons en un seul fichier).
+    2. Dès qu'il démarre, les images des voix montent une par une, en
+       arrière-plan : le son n'attend pas l'animation.
     3. On attend la fin du clip (ou le bouton « Passer »).
-    4. Toutes les images sont masquées, même en cas d'erreur.
+    4. Les images redescendent ensemble, puis sont masquées et remises à leur
+       place, même en cas d'erreur.
 
     Retourne l'URL TTS Monster pour un message sans balise (affichée sur la
     page /message/), sinon ``None``.
     """
     sections = split_into_sections(message, sound_bite_tags, voice_tags)
+    animation = VoiceImageAnimation(message_voice_labels(sections), ALL_VOICE_LABELS)
     audio_url = None
     try:
-        show_voice_images(message_voice_labels(sections), ALL_VOICE_LABELS)
         if not sound_bite_tags and not voice_tags:
             # Message sans balise : un seul fichier TTS Monster, envoyé tel quel.
             audio_url = url_tts(message, VOICE_ID)
@@ -111,10 +114,15 @@ def play_message(
                 for section in sections
                 for part in section.parts
             ])
+        # Le clip vient de démarrer dans OBS : on lance la montée des images.
+        # On ne le fait pas avant, sinon les images monteraient pendant que
+        # TTS Monster génère encore la voix.
+        animation.start()
         wait_for_obs_playback_end()
     finally:
-        # Même en cas d'erreur, aucune image ne doit rester affichée.
-        hide_voice_images(ALL_VOICE_LABELS)
+        # Descente, puis images masquées et remises en place, même en cas
+        # d'erreur (sans effet si l'animation n'a pas démarré).
+        animation.stop()
     return audio_url
 
 
