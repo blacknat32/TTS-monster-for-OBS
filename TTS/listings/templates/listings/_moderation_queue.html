@@ -64,10 +64,14 @@
   {% if not playing and not approved %}<p class="empty">Rien à jouer.</p>{% endif %}
 </section>
 
-<section class="card" aria-label="Historique">
-  <h2 class="card-title">Historique <small>{{ history|length }} derniers</small></h2>
+{# Historique repliable : cliquer sur le titre l'ouvre ou le ferme, et la
+   poignée en bas à droite de la liste l'agrandit ou la rapetisse.
+   moderation.js garde l'état ouvert, la hauteur et le défilement entre deux
+   rafraîchissements (et d'une visite à l'autre). #}
+<details class="card collapsible" id="history" aria-label="Historique" open>
+  <summary class="card-title"><span>Historique</span> <small>{{ history|length }} derniers</small></summary>
   {% if history %}
-    <ul class="queue">
+    <ul class="queue history-scroll">
       {% for item in history %}
         <li>
           <div class="request">
@@ -85,4 +89,4 @@
   {% else %}
     <p class="empty">L'historique est vide.</p>
   {% endif %}
-</section>
+</details>
