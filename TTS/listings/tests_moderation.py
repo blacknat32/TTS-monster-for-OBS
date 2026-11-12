@@ -515,3 +515,75 @@ class StreamDefaultPortTests(TestCase):
             addrport, _ = self.run_stream()
 
         self.assertEqual(addrport, "8000")
+
+
+class SimpleSyntaxTests(SoundBiteDirectoryMixin, TestCase):
+    """Syntaxe « Kermit: texte (son) » en plus des balises {…}."""
+
+    def setUp(self):
+        super().setUp()
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        for name in ("bruh.mp3", "vine-boom.mp3", "GTA Death Screen.mp3"):
+            (directory / name).touch()
+        directory_patch = patch("listings.form.SOUND_BITE_DIRECTORY", directory)
+        directory_patch.start()
+        self.addCleanup(directory_patch.stop)
+
+    def clean(self, message):
+        from .form import PromptForm
+
+        form = PromptForm({"message": message})
+        self.assertTrue(form.is_valid(), form.errors)
+        return form
+
+    def test_voice_and_sound_are_converted_to_tags(self):
+        form = self.clean("Kermit: Salut (bruh) SpongeBob: Coucou")
+
+        self.assertEqual(form.cleaned_data["message"], "{Kermit} Salut {bruh} {SpongeBob} Coucou")
+        self.assertIn("kermit", form.voice_tags)
+        self.assertIn("bruh", form.sound_bite_tags)
+
+    def test_case_spaces_and_names_with_spaces(self):
+        form = self.clean("kermit : Fin (GTA Death Screen)")
+
+        self.assertIn("kermit", form.voice_tags)
+        self.assertIn("gta death screen", form.sound_bite_tags)
+
+    def test_unknown_words_stay_as_text(self):
+        form = self.clean("Note: c'est drôle (lol)")
+
+        self.assertEqual(form.cleaned_data["message"], "Note: c'est drôle (lol)")
+        self.assertEqual(form.voice_tags, {})
+        self.assertEqual(form.sound_bite_tags, {})
+
+    def test_voice_name_inside_a_word_is_not_converted(self):
+        form = self.clean("SuperKermit: bonjour")
+
+        self.assertEqual(form.voice_tags, {})
+
+    def test_braces_syntax_still_works(self):
+        form = self.clean("{Kermit} Salut {bruh}")
+
+        self.assertIn("kermit", form.voice_tags)
+        self.assertIn("bruh", form.sound_bite_tags)
+
+    @patch("listings.worker.wait_for_obs_playback_end")
+    @patch("listings.worker.play_message")
+    def test_chat_request_with_simple_syntax_is_played(self, play, wait):
+        self.configure(auto_approve=True)
+        twitch.handle_event(twitch.CHAT_EVENT, {
+            "chatter_user_id": "42", "chatter_user_login": "viewer",
+            "chatter_user_name": "Viewer", "badges": [],
+            "message": {"text": "!tts Kermit: Salut (vine-boom)"},
+        })
+
+        request = TTSRequest.objects.get()
+        self.assertEqual(request.status, TTSRequest.Status.APPROVED)
+        self.assertEqual(request.message, "Kermit: Salut (vine-boom)")
+
+        process_next_request()
+
+        message, sounds, voices = play.call_args.args
+        self.assertEqual(message, "{Kermit} Salut {vine-boom}")
+        self.assertIn("vine-boom", sounds)
+        self.assertIn("kermit", voices)

@@ -30,6 +30,43 @@ VOICE_CHOICES = [
 ]
 
 
+# Syntaxe simplifiée, pratique à taper dans le chat Twitch :
+#   « Kermit: Salut (bruh) »  équivaut à  « {Kermit} Salut {bruh} »
+# - « NomDeVoix: » change la voix ;
+# - « (nom-du-son) » joue un son.
+# Elle est convertie en balises {…} avant la vérification habituelle, donc les
+# deux syntaxes fonctionnent partout (chat, récompenses et page /message/).
+SOUND_PARENTHESES_PATTERN = re.compile(r"\(([^()]+)\)")
+
+
+def convert_simple_syntax(
+    message: str, voice_names: list[str], sound_tags: set[str]
+) -> str:
+    """Remplace « Voix: » et « (son) » par les balises {Voix} et {son}.
+
+    Pour ne pas transformer du texte normal par erreur :
+    - « Nom: » n'est converti que si Nom est une voix connue (« Note: » reste
+      du texte) ;
+    - « (xxx) » n'est converti que si xxx est un son existant (« (lol) » est lu
+      à voix haute).
+    Les majuscules ne comptent pas : « kermit: » marche aussi.
+    """
+    if voice_names:
+        voice_pattern = re.compile(
+            # (?<![\w{]) : le nom doit être un mot entier, hors d'une balise {…}.
+            # \s*:\s* : les espaces autour des deux-points sont absorbés.
+            r"(?<![\w{])(" + "|".join(re.escape(name) for name in voice_names) + r")\s*:\s*",
+            re.IGNORECASE,
+        )
+        message = voice_pattern.sub(lambda match: "{" + match.group(1) + "} ", message)
+
+    def replace_sound(match: re.Match) -> str:
+        name = match.group(1).strip()
+        return "{" + name + "}" if name.casefold() in sound_tags else match.group(0)
+
+    return SOUND_PARENTHESES_PATTERN.sub(replace_sound, message)
+
+
 class PromptForm(forms.Form):
     """Formulaire qui reçoit le message texte et transforme les balises en actions audio."""
 
@@ -72,6 +109,12 @@ class PromptForm(forms.Form):
         """Vérifie chaque balise, valide le message et prépare les sons/voix à utiliser."""
         cleaned_data = super().clean()
         message = cleaned_data.get("message", "")
+        if message:
+            # « Kermit: Salut (bruh) » → « {Kermit} Salut {bruh} »
+            message = convert_simple_syntax(
+                message, self.voice_labels, set(self.sound_bites_by_tag)
+            )
+            cleaned_data["message"] = message
         self.sound_bite_tags: dict[str, Path] = {}
         self.voice_tags: dict[str, str] = {}
         for tag in SOUND_BITE_TAG_PATTERN.findall(message):

@@ -263,6 +263,26 @@ haute : ce sont des instructions.
 - Un message composé uniquement de balises de voix, sans texte ni son, est
   refusé.
 
+#### Syntaxe simplifiée (pratique dans le chat)
+
+Les mêmes instructions peuvent s'écrire sans accolades :
+
+| Écriture | Équivaut à | Effet |
+|---|---|---|
+| `NomDeVoix:` | `{NomDeVoix}` | Change la voix pour le texte qui suit. |
+| `(nom-du-son)` | `{nom-du-son}` | Joue l'effet sonore. |
+
+```
+Kermit: Salut le stream ! (vine-boom) SpongeBob: Bienvenue (GTA Death Screen)
+```
+
+- `Nom:` ne change la voix que si `Nom` est une voix existante : `Note: …`
+  reste du texte lu normalement.
+- `(xxx)` ne joue un son que si `xxx` est un son existant : `(lol)` est lu à
+  voix haute.
+- Les majuscules ne comptent pas, et les deux syntaxes peuvent se mélanger
+  dans un même message.
+
 ### Ajouter tes propres sons
 
 Dépose un fichier `.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a` ou `.aac` dans
@@ -357,12 +377,15 @@ python TTS/manage.py twitch_bot
 
 ### Côté viewers
 
-Dans le chat, la commande suivie du message (mêmes balises que sur la page
-`/message/`) :
+Dans le chat, la commande suivie du message. Le plus simple à taper :
+`Voix:` pour changer de voix et `(son)` pour un effet sonore (voir
+[Syntaxe simplifiée](#syntaxe-simplifiée-pratique-dans-le-chat)) :
 
 ```
-!tts {Kermit} Salut le stream ! {vine-boom}
+!tts Kermit: Salut le stream ! (vine-boom)
 ```
+
+Les balises entre accolades marchent aussi : `!tts {Kermit} Salut {vine-boom}`.
 
 Avec une récompense de points de chaîne, le viewer écrit simplement son message
 (avec ou sans balises) dans la zone de texte de la récompense.
