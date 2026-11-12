@@ -147,24 +147,34 @@ ACTIVE_MEDIA_STATES = {
 }
 
 
+# État de la source média après un clic sur « Passer » (arrêt manuel). Une fin
+# normale donne « OBS_MEDIA_STATE_ENDED ».
+MEDIA_STATE_STOPPED = "OBS_MEDIA_STATE_STOPPED"
+
+
 def wait_for_obs_playback_end(
     timeout_seconds: float = 300, poll_seconds: float = 0.25
-) -> None:
+) -> str:
     """Attend que la source média d'OBS ait fini (ou arrêté) de jouer le clip.
 
     Interroge OBS toutes les ``poll_seconds`` secondes. Au bout de
     ``timeout_seconds`` (5 minutes par défaut), on abandonne l'attente pour
     ne jamais bloquer la file indéfiniment.
+
+    Retourne l'état final de la source. ``MEDIA_STATE_STOPPED`` veut dire que
+    le clip a été coupé avec « Passer » : la suite du message ne doit pas
+    être jouée.
     """
     _, _, _, input_name = _load_obs_settings()
     deadline = time.monotonic() + timeout_seconds
+    media_state = ""
     while time.monotonic() < deadline:
         try:
             with _obs_lock:
                 connect_to_obs()
                 client = _obs_client
                 if client is None:
-                    return
+                    return media_state
                 media_state = client.get_media_input_status(input_name).media_state
         except TTSGenerationError:
             raise
@@ -174,9 +184,10 @@ def wait_for_obs_playback_end(
                 f"Lost the OBS connection while waiting for playback: {exc}"
             ) from exc
         if media_state not in ACTIVE_MEDIA_STATES:
-            return
+            return media_state
         time.sleep(poll_seconds)
     logger.warning("Playback did not end after %s seconds; moving on.", timeout_seconds)
+    return media_state
 
 
 def stop_obs_playback() -> None:
@@ -194,6 +205,83 @@ def stop_obs_playback() -> None:
     except Exception as exc:
         disconnect_from_obs()
         raise TTSGenerationError(f"OBS could not stop the clip: {exc}") from exc
+
+
+# --- Images des voix -----------------------------------------------------------
+# Pendant un clip, OBS affiche les images de toutes les voix du message, dès le
+# début, puis les masque toutes à la fin. Chaque image est
+# une source de la scène dédiée (``[images] scene`` dans TTS/config file,
+# « TTS Image » par défaut), nommée « <voix> OBS Image » : « Adam OBS Image »,
+# « Kermit OBS Image »…
+#
+# Les noms sont comparés sans tenir compte des majuscules, des espaces ni de la
+# ponctuation : « Adam OBS Image », « Adam, OBS Image » et « adam_obs_image »
+# désignent la même source.
+#
+# Une voix sans source correspondante n'affiche simplement rien. Une erreur
+# d'image ne doit jamais empêcher le son d'être joué : elle est seulement notée
+# dans le terminal.
+
+VOICE_IMAGE_SUFFIX = " OBS Image"
+DEFAULT_IMAGE_SCENE = "TTS Image"
+
+
+def voice_image_source_name(voice_label: str) -> str:
+    """Nom de la source image d'une voix : « Adam » → « Adam OBS Image »."""
+    return f"{voice_label}{VOICE_IMAGE_SUFFIX}"
+
+
+def _comparable_name(name: str) -> str:
+    """« Adam, OBS-Image » → « adamobsimage » : seules lettres et chiffres comptent."""
+    return "".join(character for character in name.casefold() if character.isalnum())
+
+
+def _load_image_scene() -> str:
+    """Nom de la scène qui contient les images (section [images] du config file)."""
+    try:
+        config = tomllib.loads(OBS_CONFIG_PATH.read_text(encoding="utf-8"))
+        scene = config.get("images", {}).get("scene", DEFAULT_IMAGE_SCENE)
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        return DEFAULT_IMAGE_SCENE
+    return str(scene).strip() or DEFAULT_IMAGE_SCENE
+
+
+def show_voice_images(voice_labels: list[str], all_voice_labels: list[str]) -> None:
+    """Affiche les images de ``voice_labels`` et masque celles des autres voix.
+
+    Toutes les voix d'un message sont affichées ensemble, dès le début du clip.
+    Avec une liste vide, toutes les images sont masquées (fin du clip).
+    """
+    scene = _load_image_scene()
+    wanted = {_comparable_name(voice_image_source_name(label)) for label in voice_labels}
+    image_sources = {
+        _comparable_name(voice_image_source_name(label)) for label in all_voice_labels
+    }
+    try:
+        with _obs_lock:
+            connect_to_obs()
+            client = _obs_client
+            if client is None:
+                return
+            for item in client.get_scene_item_list(scene).scene_items:
+                name = _comparable_name(item.get("sourceName") or "")
+                if name not in image_sources:
+                    continue  # Autre source de la scène (texte, cadre…) : on n'y touche pas.
+                visible = name in wanted
+                if bool(item.get("sceneItemEnabled")) != visible:
+                    client.set_scene_item_enabled(scene, item["sceneItemId"], visible)
+    except TTSGenerationError as exc:
+        logger.warning("Voice images not updated: %s", exc)
+    except Exception as exc:
+        # Scène introuvable, OBS fermé… : le son passe quand même.
+        logger.warning(
+            "Voice images not updated (scene %r, voices %r): %s", scene, voice_labels, exc
+        )
+
+
+def hide_voice_images(all_voice_labels: list[str]) -> None:
+    """Masque toutes les images des voix."""
+    show_voice_images([], all_voice_labels)
 
 
 def _get_obs_local_file_path(audio_path: Path, obs_platform: str) -> str:

@@ -53,6 +53,17 @@ class TTSFormTests(TestCase):
         form_directory_patch.start()
         self.addCleanup(form_directory_patch.stop)
 
+        # play_message attend la fin du clip et affiche les images des voix :
+        # on simule OBS pour ces deux appels.
+        for target, value in (
+            ("listings.playback.wait_for_obs_playback_end", "OBS_MEDIA_STATE_ENDED"),
+            ("listings.playback.show_voice_images", None),
+            ("listings.playback.hide_voice_images", None),
+        ):
+            obs_patch = patch(target, return_value=value)
+            setattr(self, target.rsplit(".", 1)[1], obs_patch.start())
+            self.addCleanup(obs_patch.stop)
+
     def test_get_displays_message_form(self):
         response = self.client.get(reverse("listings"))
 
@@ -172,6 +183,12 @@ class TTSFormTests(TestCase):
                 "https://example.com/brian.wav",
             ]
         )
+        # Les images des trois voix sont affichées ensemble, dès le début.
+        self.show_voice_images.assert_called_once()
+        self.assertEqual(
+            self.show_voice_images.call_args.args[0], ["SpongeBob", "Adam", "Brian"]
+        )
+        self.hide_voice_images.assert_called_once()
 
     def test_unknown_tag_is_rejected(self):
         response = self.client.post(

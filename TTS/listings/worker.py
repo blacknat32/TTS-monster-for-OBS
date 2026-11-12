@@ -17,7 +17,7 @@ import threading
 from django.db import close_old_connections
 from django.utils import timezone
 
-from TTS.chatbot import TTSGenerationError, wait_for_obs_playback_end
+from TTS.chatbot import TTSGenerationError
 
 from .form import PromptForm
 from .models import ModerationSettings, TTSRequest, TwitchConnection
@@ -71,10 +71,9 @@ def play_request(request: TTSRequest) -> None:
                 " ".join(str(e) for e in form.errors.get("message", []))
                 or "Message invalide."
             )
-        # Même code que la page /message/ : TTS Monster, FFmpeg puis OBS.
+        # Même code que la page /message/ : TTS Monster, FFmpeg, OBS et images
+        # des voix. Bloque jusqu'à la fin du clip (ou jusqu'au bouton « Passer »).
         play_message(form.cleaned_data["message"], form.sound_bite_tags, form.voice_tags)
-        # Bloque jusqu'à la fin du clip (ou jusqu'au bouton « Passer »).
-        wait_for_obs_playback_end()
     except TTSGenerationError as exc:
         # Erreur prévue (OBS fermé, quota TTS Monster…) : on la garde pour
         # l'afficher dans l'historique du panneau.

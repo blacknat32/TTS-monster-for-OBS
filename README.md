@@ -202,6 +202,9 @@ password = ""           # mot de passe WebSocket d'OBS ("" si désactivé)
 
 [audio]
 input_name = "TTS Audio"  # nom exact de la source média dans OBS
+
+[images]
+scene = "TTS Image"       # scène qui contient les images des voix (facultatif)
 ```
 
 Le port et le mot de passe se trouvent dans OBS : **Outils → Paramètres du
@@ -218,6 +221,39 @@ serveur WebSocket → Afficher les informations de connexion**.
 
 > ⚠️ L'étape 3 est indispensable : avec *Monitoring désactivé*, le son part
 > dans le stream, mais **tu ne l'entends pas** chez toi.
+
+### Images des voix (facultatif)
+
+Pendant un TTS, OBS peut afficher une image pour chaque voix du message :
+elles apparaissent toutes au début du clip et disparaissent à la fin.
+
+1. Crée une scène nommée **`TTS Image`** (ou le nom choisi dans `[images] scene` du
+   `config file`).
+2. Dans cette scène, ajoute une source image par voix, nommée **le nom exact
+   de la voix + ` OBS Image`** : `Adam OBS Image`, `Kermit OBS Image`,
+   `SpongeBob OBS Image`… **Masque-les** (icône 👁), et place-les à des
+   endroits différents : plusieurs peuvent être affichées en même temps.
+   Les majuscules, espaces et signes de ponctuation ne comptent pas :
+   `adam obs image` ou `Adam_OBS_Image` marchent aussi.
+3. Ajoute la scène `TTS Image` comme **source** dans ta scène de stream
+   (*+ → Scène → TTS Image*), au-dessus de ta webcam et de ton jeu.
+
+Ensuite, pour chaque message :
+
+- les images de **toutes les voix du message** s'affichent dès le début :
+  avec `Kermit: Salut Adam: Coucou`, `Kermit OBS Image` et `Adam OBS Image`
+  apparaissent ensemble ;
+- le texte placé avant toute voix est dit par SpongeBob : dans ce cas,
+  `SpongeBob OBS Image` s'affiche aussi ;
+- à la fin du clip, ou avec le bouton *Passer* du panneau, toutes les images
+  sont masquées.
+
+Une voix sans image ne pose aucun problème : rien ne s'affiche, le son est joué
+normalement. Les autres sources de la scène (texte, cadre…) ne sont pas
+touchées.
+
+> La page `/message/` attend maintenant la fin du clip avant de se recharger,
+> pour pouvoir masquer les images à la fin.
 
 ## Utilisation
 
