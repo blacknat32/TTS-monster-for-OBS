@@ -53,6 +53,16 @@ class TTSFormTests(TestCase):
         form_directory_patch.start()
         self.addCleanup(form_directory_patch.stop)
 
+        # play_message attend la fin du clip et anime les images des voix :
+        # on simule OBS pour ces deux appels.
+        for target in (
+            "listings.playback.wait_for_obs_playback_end",
+            "listings.playback.VoiceImageAnimation",
+        ):
+            obs_patch = patch(target)
+            setattr(self, target.rsplit(".", 1)[1], obs_patch.start())
+            self.addCleanup(obs_patch.stop)
+
     def test_get_displays_message_form(self):
         response = self.client.get(reverse("listings"))
 
@@ -74,8 +84,8 @@ class TTSFormTests(TestCase):
         self.assertNotContains(response, 'data-tag="{notes}"')
         self.assertContains(response, "listings/prompt-tags.js")
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_valid_post_sends_audio_to_obs_and_displays_audio(
         self, generate_audio, send_to_obs
     ):
@@ -90,8 +100,8 @@ class TTSFormTests(TestCase):
         send_to_obs.assert_called_once_with("https://example.com/generated.wav")
         self.assertContains(response, "https://example.com/generated.wav")
 
-    @patch("listings.views.send_audio_sequence_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_sequence_to_obs")
+    @patch("listings.playback.url_tts")
     def test_sound_tags_play_tts_and_sound_bites_in_message_order(
         self, generate_audio, send_sequence_to_obs
     ):
@@ -124,8 +134,8 @@ class TTSFormTests(TestCase):
             ]
         )
 
-    @patch("listings.views.url_tts")
-    @patch("listings.views.send_audio_sequence_to_obs")
+    @patch("listings.playback.url_tts")
+    @patch("listings.playback.send_audio_sequence_to_obs")
     def test_message_with_only_sound_tag_plays_sound_without_tts(
         self, send_sequence_to_obs, generate_audio
     ):
@@ -140,8 +150,8 @@ class TTSFormTests(TestCase):
         )
         generate_audio.assert_not_called()
 
-    @patch("listings.views.send_audio_sequence_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_sequence_to_obs")
+    @patch("listings.playback.url_tts")
     def test_voice_tags_switch_voice_for_following_text(
         self, generate_audio, send_sequence_to_obs
     ):
@@ -172,6 +182,14 @@ class TTSFormTests(TestCase):
                 "https://example.com/brian.wav",
             ]
         )
+        # Les images des trois voix sont affichées ensemble, dès le début.
+        # L'animation reçoit les trois voix, dans l'ordre du message.
+        self.VoiceImageAnimation.assert_called_once()
+        self.assertEqual(
+            self.VoiceImageAnimation.call_args.args[0], ["SpongeBob", "Adam", "Brian"]
+        )
+        self.VoiceImageAnimation.return_value.start.assert_called_once()
+        self.VoiceImageAnimation.return_value.stop.assert_called_once()
 
     def test_unknown_tag_is_rejected(self):
         response = self.client.post(
@@ -182,8 +200,8 @@ class TTSFormTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Balise inconnue : {not_a_sound}.")
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_invalid_post_does_not_generate_audio(self, generate_audio, send_to_obs):
         response = self.client.post(
             reverse("listings"), {"message": ""}
@@ -201,8 +219,8 @@ class TTSFormTests(TestCase):
         self.assertIn("Adam", form.voice_labels)
         self.assertNotIn("bruh", form.voice_labels)
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_obs_error_is_displayed(self, generate_audio, send_to_obs):
         generate_audio.return_value = "https://example.com/generated.wav"
         send_to_obs.side_effect = TTSGenerationError("OBS service is unavailable.")
@@ -214,8 +232,8 @@ class TTSFormTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "OBS service is unavailable.")
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_duplicate_clip_is_skipped_before_sending_to_obs(self, generate_audio, send_to_obs):
         generate_audio.return_value = "https://example.com/generated.wav"
 
@@ -229,8 +247,8 @@ class TTSFormTests(TestCase):
         self.assertContains(second_response, "File d'attente")
         self.assertContains(second_response, "Bonjour")
 
-    @patch("listings.views.send_audio_sequence_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_sequence_to_obs")
+    @patch("listings.playback.url_tts")
     def test_tags_are_case_insensitive(self, generate_audio, send_sequence_to_obs):
         generate_audio.return_value = "https://example.com/adam.wav"
 
@@ -266,7 +284,7 @@ class TTSFormTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("Ajoutez du texte ou une balise de son.", str(form.errors))
 
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.url_tts")
     def test_message_longer_than_limit_is_rejected(self, generate_audio):
         response = self.client.post(reverse("listings"), {"message": "a" * 1001})
 
@@ -274,8 +292,8 @@ class TTSFormTests(TestCase):
         self.assertContains(response, "at most 1000 characters")
         generate_audio.assert_not_called()
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_duplicate_detection_ignores_case_and_extra_spaces(
         self, generate_audio, send_to_obs
     ):
@@ -289,8 +307,8 @@ class TTSFormTests(TestCase):
         self.assertEqual(send_to_obs.call_count, 1)
         self.assertContains(response, "Ce clip a déjà été joué.")
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_failed_clip_is_not_marked_as_played(self, generate_audio, send_to_obs):
         generate_audio.return_value = "https://example.com/generated.wav"
         send_to_obs.side_effect = [TTSGenerationError("OBS is closed."), None]
@@ -302,8 +320,8 @@ class TTSFormTests(TestCase):
         self.assertEqual(send_to_obs.call_count, 2)
         self.assertNotContains(second_response, "Ce clip a déjà été joué.")
 
-    @patch("listings.views.send_audio_sequence_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_sequence_to_obs")
+    @patch("listings.playback.url_tts")
     def test_tagged_message_error_is_displayed(self, generate_audio, send_sequence_to_obs):
         generate_audio.return_value = "https://example.com/generated.wav"
         send_sequence_to_obs.side_effect = TTSGenerationError("FFmpeg failed.")
@@ -313,8 +331,8 @@ class TTSFormTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "FFmpeg failed.")
 
-    @patch("listings.views.send_audio_to_obs")
-    @patch("listings.views.url_tts")
+    @patch("listings.playback.send_audio_to_obs")
+    @patch("listings.playback.url_tts")
     def test_queue_keeps_only_the_ten_latest_clips(self, generate_audio, send_to_obs):
         generate_audio.return_value = "https://example.com/generated.wav"
 

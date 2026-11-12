@@ -1,0 +1,88 @@
+{% comment %}
+  Fragment de la file : état du bot, demandes « à valider », file de lecture
+  et historique. Inclus dans moderation.html et servi seul par la vue
+  moderation_queue, que moderation.js appelle toutes les 3 secondes.
+  Chaque bouton est un petit formulaire POST vers moderation_action.
+{% endcomment %}
+<p class="bot-status{% if bot_running %} bot-on{% endif %}">
+  {% if bot_running %}● Bot actif{% if connection.bot_status %} — {{ connection.bot_status }}{% endif %}
+  {% else %}○ Bot arrêté — rien ne sera joué. Lance <code>python TTS/manage.py stream</code> (à la place de <code>runserver</code>) ou <code>twitch_bot</code> dans un second terminal{% endif %}
+</p>
+
+<section class="card" aria-label="Demandes à valider">
+  <h2 class="card-title">À valider <small>{{ pending|length }}</small></h2>
+  {% if pending %}
+    <ul class="queue">
+      {% for item in pending %}
+        <li>
+          <div class="request">
+            <span class="request-meta"><strong>{{ item.author }}</strong> · {{ item.get_source_display }} · {{ item.created_at|time:"H:i" }}</span>
+            <span class="queue-label">{{ item.message }}</span>
+            {% if item.flag_reason %}<span class="flag">⚠ {{ item.flag_reason }}</span>{% endif %}
+          </div>
+          <div class="actions">
+            <form method="post" action="{% url 'moderation_action' item.pk 'approve' %}">{% csrf_token %}<button class="button button-ok" type="submit">Approuver</button></form>
+            <form method="post" action="{% url 'moderation_action' item.pk 'reject' %}">{% csrf_token %}<button class="button button-ghost" type="submit">Refuser</button></form>
+            {% if item.twitch_login %}
+              <form method="post" action="{% url 'moderation_action' item.pk 'ban' %}" data-confirm="Bannir {{ item.author }} du TTS ?">{% csrf_token %}<button class="button button-danger" type="submit">Bannir</button></form>
+            {% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">Aucune demande en attente.</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-label="File de lecture">
+  <h2 class="card-title">File de lecture <small>{{ approved|length }} en attente</small></h2>
+  <ul class="queue">
+    {% if playing %}
+      <li class="now-playing">
+        <div class="request">
+          <span class="request-meta"><strong>{{ playing.author }}</strong> · en lecture</span>
+          <span class="queue-label">{{ playing.message }}</span>
+        </div>
+        <div class="actions">
+          <form method="post" action="{% url 'moderation_skip' %}">{% csrf_token %}<button class="button button-danger" type="submit">Passer ⏭</button></form>
+        </div>
+      </li>
+    {% endif %}
+    {% for item in approved %}
+      <li>
+        <div class="request">
+          <span class="request-meta"><strong>{{ item.author }}</strong> · {{ item.get_source_display }}</span>
+          <span class="queue-label">{{ item.message }}</span>
+        </div>
+        <div class="actions">
+          <form method="post" action="{% url 'moderation_action' item.pk 'remove' %}">{% csrf_token %}<button class="button button-ghost" type="submit">Retirer</button></form>
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+  {% if not playing and not approved %}<p class="empty">Rien à jouer.</p>{% endif %}
+</section>
+
+<section class="card" aria-label="Historique">
+  <h2 class="card-title">Historique <small>{{ history|length }} derniers</small></h2>
+  {% if history %}
+    <ul class="queue">
+      {% for item in history %}
+        <li>
+          <div class="request">
+            <span class="request-meta"><strong>{{ item.author }}</strong> · {{ item.get_source_display }} · {{ item.created_at|date:"d/m H:i" }}</span>
+            <span class="queue-label">{{ item.message }}</span>
+            {% if item.error %}<span class="flag">{{ item.error }}</span>{% endif %}
+          </div>
+          <div class="actions">
+            <span class="badge{% if item.status == 'played' %} badge-played{% else %} badge-bad{% endif %}">{{ item.get_status_display }}</span>
+            <form method="post" action="{% url 'moderation_action' item.pk 'replay' %}">{% csrf_token %}<button class="button button-ghost" type="submit">Rejouer</button></form>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">L'historique est vide.</p>
+  {% endif %}
+</section>

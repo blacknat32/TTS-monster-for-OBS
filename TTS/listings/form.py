@@ -5,6 +5,8 @@ from django import forms
 
 from TTS.chatbot import VOICE_ID
 
+from .models import ModerationSettings
+
 
 SOUND_BITE_DIRECTORY = Path(__file__).resolve().parents[1] / "media" / "Sound_Bites"
 SOUND_BITE_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
@@ -26,6 +28,43 @@ VOICE_CHOICES = [
     ("1948c544-0eab-4408-9259-567b5b2059a4", "Trump"),
     ("68bc5eb0-fa1f-4d9b-b0bc-89f51edf5fb0", "Yuki"),
 ]
+
+
+# Syntaxe simplifiée, pratique à taper dans le chat Twitch :
+#   « Kermit: Salut (bruh) »  équivaut à  « {Kermit} Salut {bruh} »
+# - « NomDeVoix: » change la voix ;
+# - « (nom-du-son) » joue un son.
+# Elle est convertie en balises {…} avant la vérification habituelle, donc les
+# deux syntaxes fonctionnent partout (chat, récompenses et page /message/).
+SOUND_PARENTHESES_PATTERN = re.compile(r"\(([^()]+)\)")
+
+
+def convert_simple_syntax(
+    message: str, voice_names: list[str], sound_tags: set[str]
+) -> str:
+    """Remplace « Voix: » et « (son) » par les balises {Voix} et {son}.
+
+    Pour ne pas transformer du texte normal par erreur :
+    - « Nom: » n'est converti que si Nom est une voix connue (« Note: » reste
+      du texte) ;
+    - « (xxx) » n'est converti que si xxx est un son existant (« (lol) » est lu
+      à voix haute).
+    Les majuscules ne comptent pas : « kermit: » marche aussi.
+    """
+    if voice_names:
+        voice_pattern = re.compile(
+            # (?<![\w{]) : le nom doit être un mot entier, hors d'une balise {…}.
+            # \s*:\s* : les espaces autour des deux-points sont absorbés.
+            r"(?<![\w{])(" + "|".join(re.escape(name) for name in voice_names) + r")\s*:\s*",
+            re.IGNORECASE,
+        )
+        message = voice_pattern.sub(lambda match: "{" + match.group(1) + "} ", message)
+
+    def replace_sound(match: re.Match) -> str:
+        name = match.group(1).strip()
+        return "{" + name + "}" if name.casefold() in sound_tags else match.group(0)
+
+    return SOUND_PARENTHESES_PATTERN.sub(replace_sound, message)
 
 
 class PromptForm(forms.Form):
@@ -70,6 +109,12 @@ class PromptForm(forms.Form):
         """Vérifie chaque balise, valide le message et prépare les sons/voix à utiliser."""
         cleaned_data = super().clean()
         message = cleaned_data.get("message", "")
+        if message:
+            # « Kermit: Salut (bruh) » → « {Kermit} Salut {bruh} »
+            message = convert_simple_syntax(
+                message, self.voice_labels, set(self.sound_bites_by_tag)
+            )
+            cleaned_data["message"] = message
         self.sound_bite_tags: dict[str, Path] = {}
         self.voice_tags: dict[str, str] = {}
         for tag in SOUND_BITE_TAG_PATTERN.findall(message):
@@ -103,3 +148,36 @@ class PromptForm(forms.Form):
             self.add_error("message", "Ajoutez du texte ou une balise de son.")
 
         return cleaned_data
+
+
+class ModerationSettingsForm(forms.ModelForm):
+    """Formulaire « Réglages » en bas du panneau de modération.
+
+    Les trois interrupteurs du haut du panneau (mode auto, demandes ouvertes,
+    pause) n'en font pas partie : ils ont chacun leur bouton.
+    """
+
+    class Meta:
+        model = ModerationSettings
+        fields = [
+            "chat_command",
+            "chat_access",
+            "reward_title",
+            "user_cooldown_seconds",
+            "max_message_length",
+            "trust_moderators",
+            "banned_words",
+            "banned_users",
+        ]
+        widgets = {
+            "banned_words": forms.Textarea(attrs={"rows": 4}),
+            "banned_users": forms.Textarea(attrs={"rows": 4}),
+        }
+
+    def clean_max_message_length(self):
+        """La limite ne peut pas dépasser celle du formulaire de message (1000)."""
+        value = self.cleaned_data["max_message_length"]
+        max_allowed = PromptForm.base_fields["message"].max_length
+        if not 1 <= value <= max_allowed:
+            raise forms.ValidationError(f"Entre 1 et {max_allowed} caractères.")
+        return value

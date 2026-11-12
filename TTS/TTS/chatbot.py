@@ -9,6 +9,7 @@ import threading
 import time
 import tomllib
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PureWindowsPath
 from typing import Any
@@ -132,6 +133,377 @@ def _start_media_playback(client: Any, input_name: str) -> None:
             f"OBS did not start playback for media input '{input_name}' "
             f"(state: {media_state}). Check the OBS Media Source and its audio settings."
         )
+
+
+# --- Ajouts pour le bot Twitch ------------------------------------------------
+# Le worker du bot joue les clips à la suite : il doit savoir quand un clip est
+# fini avant d'envoyer le suivant à la source média, et le bouton « Passer »
+# du panneau doit pouvoir couper le clip en cours.
+
+# États de la source média d'OBS pendant lesquels un clip est encore en cours.
+ACTIVE_MEDIA_STATES = {
+    "OBS_MEDIA_STATE_OPENING",
+    "OBS_MEDIA_STATE_BUFFERING",
+    "OBS_MEDIA_STATE_PLAYING",
+}
+
+
+# État de la source média après un clic sur « Passer » (arrêt manuel). Une fin
+# normale donne « OBS_MEDIA_STATE_ENDED ».
+MEDIA_STATE_STOPPED = "OBS_MEDIA_STATE_STOPPED"
+
+
+def wait_for_obs_playback_end(
+    timeout_seconds: float = 300, poll_seconds: float = 0.25
+) -> str:
+    """Attend que la source média d'OBS ait fini (ou arrêté) de jouer le clip.
+
+    Interroge OBS toutes les ``poll_seconds`` secondes. Au bout de
+    ``timeout_seconds`` (5 minutes par défaut), on abandonne l'attente pour
+    ne jamais bloquer la file indéfiniment.
+
+    Retourne l'état final de la source. ``MEDIA_STATE_STOPPED`` veut dire que
+    le clip a été coupé avec « Passer » : la suite du message ne doit pas
+    être jouée.
+    """
+    _, _, _, input_name = _load_obs_settings()
+    deadline = time.monotonic() + timeout_seconds
+    media_state = ""
+    while time.monotonic() < deadline:
+        try:
+            with _obs_lock:
+                connect_to_obs()
+                client = _obs_client
+                if client is None:
+                    return media_state
+                media_state = client.get_media_input_status(input_name).media_state
+        except TTSGenerationError:
+            raise
+        except Exception as exc:
+            disconnect_from_obs()
+            raise TTSGenerationError(
+                f"Lost the OBS connection while waiting for playback: {exc}"
+            ) from exc
+        if media_state not in ACTIVE_MEDIA_STATES:
+            return media_state
+        time.sleep(poll_seconds)
+    logger.warning("Playback did not end after %s seconds; moving on.", timeout_seconds)
+    return media_state
+
+
+def stop_obs_playback() -> None:
+    """Coupe le clip en cours dans OBS (bouton « Passer » du panneau)."""
+    _, _, _, input_name = _load_obs_settings()
+    try:
+        with _obs_lock:
+            connect_to_obs()
+            if _obs_client is not None:
+                _obs_client.trigger_media_input_action(
+                    input_name, "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP"
+                )
+    except TTSGenerationError:
+        raise
+    except Exception as exc:
+        disconnect_from_obs()
+        raise TTSGenerationError(f"OBS could not stop the clip: {exc}") from exc
+
+
+# --- Images des voix -----------------------------------------------------------
+# Pendant un TTS, OBS affiche une image pour chaque voix du message, avec une
+# animation :
+#
+# - les images **montent** du bas de l'écran jusqu'à leur place, une par une,
+#   dans l'ordre des voix du message, avec un décalage entre deux images ;
+# - à la fin du clip (ou avec « Passer »), elles **redescendent** toutes
+#   ensemble sous l'écran, puis sont masquées.
+#
+# Leur « place », c'est la position où elles ont été posées dans OBS : le bot la
+# lit au début et la remet à l'identique à la fin, la mise en page ne bouge donc
+# jamais. Le son démarre tout de suite : l'animation tourne en parallèle.
+#
+# Chaque image est une source de la scène dédiée (``[images] scene`` dans
+# TTS/config file, « TTS Image » par défaut), nommée « <voix> OBS Image » :
+# « Adam OBS Image », « Kermit OBS Image »… Les noms sont comparés sans tenir
+# compte des majuscules, des espaces ni de la ponctuation : « Adam OBS Image »,
+# « Adam, OBS Image » et « adam_obs_image » désignent la même source.
+#
+# Une voix sans source correspondante n'affiche simplement rien. Une erreur
+# d'image ne doit jamais empêcher le son d'être joué : elle est seulement notée
+# dans le terminal.
+
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ RÉGLAGES DES IMAGES ET DES ANIMATIONS                                   │
+# │                                                                         │
+# │ Le plus simple pour changer les durées : les mettre dans la section     │
+# │ [images] de TTS/TTS/config file (pas besoin de toucher au code) :       │
+# │                                                                         │
+# │     [images]                                                            │
+# │     scene = "TTS Image"                                                 │
+# │     rise_delay = 1.0      # secondes entre la montée de deux images     │
+# │     rise_duration = 0.6   # secondes pour qu'une image monte            │
+# │     fall_duration = 3.0   # secondes pour que les images redescendent   │
+# │                                                                         │
+# │ Les valeurs ci-dessous sont celles utilisées quand une ligne est        │
+# │ absente du config file. Après une modification (config file ou code),   │
+# │ relance « python TTS/manage.py stream ».                                │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+# Fin du nom des sources images dans OBS : « Adam » + « OBS Image ».
+VOICE_IMAGE_SUFFIX = " OBS Image"
+# Scène OBS qui contient les images (clé « scene » du config file).
+DEFAULT_IMAGE_SCENE = "TTS Image"
+
+# Décalage, en secondes, entre le début de la montée de deux images.
+# Ex. 1.0 : la 1re image monte tout de suite, la 2e 1 s après, la 3e 2 s après.
+# Mettre 0 pour que toutes les images montent en même temps.
+DEFAULT_RISE_DELAY = 1.0
+
+# Durée, en secondes, de la montée d'une image (du bas de l'écran à sa place).
+DEFAULT_RISE_DURATION = 0.6
+
+# Durée, en secondes, de la descente finale (toutes les images ensemble).
+DEFAULT_FALL_DURATION = 3.0
+
+# Fluidité : nombre de positions envoyées à OBS par seconde pendant une
+# animation. Plus haut = plus fluide, mais plus de messages vers OBS.
+# 30 est un bon compromis ; inutile de dépasser 60.
+ANIMATION_FPS = 30
+
+
+def voice_image_source_name(voice_label: str) -> str:
+    """Nom de la source image d'une voix : « Adam » → « Adam OBS Image »."""
+    return f"{voice_label}{VOICE_IMAGE_SUFFIX}"
+
+
+def _comparable_name(name: str) -> str:
+    """« Adam, OBS-Image » → « adamobsimage » : seules lettres et chiffres comptent."""
+    return "".join(character for character in name.casefold() if character.isalnum())
+
+
+def _load_images_config() -> dict:
+    """Section [images] du config file (vide si absente ou illisible)."""
+    try:
+        config = tomllib.loads(OBS_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    images = config.get("images", {})
+    return images if isinstance(images, dict) else {}
+
+
+def _load_image_scene() -> str:
+    """Nom de la scène qui contient les images (``[images] scene``)."""
+    scene = _load_images_config().get("scene", DEFAULT_IMAGE_SCENE)
+    return str(scene).strip() or DEFAULT_IMAGE_SCENE
+
+
+def _load_duration(key: str, default: float) -> float:
+    """Durée en secondes lue dans [images] ; la valeur par défaut si invalide."""
+    try:
+        value = float(_load_images_config().get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _ease_out(progress: float) -> float:
+    """Courbe d'animation : rapide au départ, ralentit à l'arrivée."""
+    return 1 - (1 - progress) ** 3
+
+
+@dataclass
+class _AnimatedImage:
+    """Une image de voix pendant l'animation."""
+
+    item_id: int
+    home_y: float  # position posée dans OBS, remise à la fin
+    hidden_y: float  # position sous le bas de l'écran
+    current_y: float = 0.0
+    shown: bool = False
+
+
+class VoiceImageAnimation:
+    """Fait monter les images des voix une par une, puis les fait redescendre.
+
+    Utilisation (voir ``listings/playback.py``) ::
+
+        animation = VoiceImageAnimation(["SpongeBob", "Shadow"], toutes_les_voix)
+        animation.start()   # montée en arrière-plan, rend la main tout de suite
+        ...                 # le son est joué pendant ce temps
+        animation.stop()    # descente, puis images masquées et remises en place
+    """
+
+    def __init__(self, voice_labels: list[str], all_voice_labels: list[str]):
+        self.voice_labels = voice_labels
+        self.all_voice_labels = all_voice_labels
+        self.scene = _load_image_scene()
+        self.rise_delay = _load_duration("rise_delay", DEFAULT_RISE_DELAY)
+        self.rise_duration = _load_duration("rise_duration", DEFAULT_RISE_DURATION)
+        self.fall_duration = _load_duration("fall_duration", DEFAULT_FALL_DURATION)
+        self.images: list[_AnimatedImage] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Prépare les images puis lance la montée en arrière-plan."""
+        try:
+            self._prepare()
+        except Exception as exc:
+            logger.warning("Voice images not shown (scene %r): %s", self.scene, exc)
+            self.images = []
+            return
+        if self.images:
+            self._thread = threading.Thread(
+                target=self._rise_all, name="voice-images", daemon=True
+            )
+            self._thread.start()
+
+    def stop(self) -> None:
+        """Arrête la montée, fait redescendre les images et les remet en place."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=10)
+        try:
+            self._fall_all()
+        except Exception as exc:
+            logger.warning("Voice images not lowered: %s", exc)
+        finally:
+            self._restore_all()
+
+    # --- Étapes -----------------------------------------------------------------
+
+    def _prepare(self) -> None:
+        """Repère les images, masque celles des autres voix, note les positions."""
+        wanted = [
+            _comparable_name(voice_image_source_name(label)) for label in self.voice_labels
+        ]
+        all_images = {
+            _comparable_name(voice_image_source_name(label))
+            for label in self.all_voice_labels
+        }
+        with _obs_lock:
+            connect_to_obs()
+            client = _obs_client
+            if client is None:
+                return
+            canvas_height = float(client.get_video_settings().base_height)
+            items_by_name = {}
+            for item in client.get_scene_item_list(self.scene).scene_items:
+                name = _comparable_name(item.get("sourceName") or "")
+                if name not in all_images:
+                    continue  # Autre source de la scène (texte, cadre…) : on n'y touche pas.
+                if item.get("sceneItemEnabled"):
+                    # Toutes les images de voix partent masquées.
+                    client.set_scene_item_enabled(self.scene, item["sceneItemId"], False)
+                items_by_name.setdefault(name, item)
+
+            for name in wanted:  # dans l'ordre des voix du message
+                item = items_by_name.get(name)
+                if item is None:
+                    continue  # Pas d'image pour cette voix.
+                transform = client.get_scene_item_transform(
+                    self.scene, item["sceneItemId"]
+                ).scene_item_transform
+                home_y = float(transform.get("positionY", 0))
+                height = float(transform.get("height", 0))
+                # Assez bas pour que l'image soit entièrement sous l'écran,
+                # quel que soit son point d'ancrage dans OBS.
+                hidden_y = canvas_height + height
+                self.images.append(
+                    _AnimatedImage(item["sceneItemId"], home_y, hidden_y, hidden_y)
+                )
+
+    def _rise_all(self) -> None:
+        """Fait monter les images une par une (dans un thread)."""
+        try:
+            for index, image in enumerate(self.images):
+                if index and self._stop.wait(self.rise_delay):
+                    return  # Fin du clip avant le tour de cette image.
+                if self._stop.is_set():
+                    return
+                with _obs_lock:
+                    self._move(image, image.hidden_y)
+                    _obs_client.set_scene_item_enabled(self.scene, image.item_id, True)
+                image.shown = True
+                self._animate([image], image.hidden_y, image.home_y, self.rise_duration)
+        except Exception as exc:
+            logger.warning("Voice image animation stopped: %s", exc)
+
+    def _fall_all(self) -> None:
+        """Fait redescendre ensemble toutes les images affichées."""
+        shown = [image for image in self.images if image.shown]
+        if shown:
+            self._animate_each(
+                shown,
+                {image.item_id: image.current_y for image in shown},
+                {image.item_id: image.hidden_y for image in shown},
+                self.fall_duration,
+                interruptible=False,
+            )
+
+    def _restore_all(self) -> None:
+        """Masque les images et les remet à leur position d'origine."""
+        if not self.images:
+            return
+        try:
+            with _obs_lock:
+                for image in self.images:
+                    _obs_client.set_scene_item_enabled(self.scene, image.item_id, False)
+                    self._move(image, image.home_y)
+        except Exception as exc:
+            logger.warning("Voice images not restored to their place: %s", exc)
+
+    # --- Outils d'animation ------------------------------------------------------
+
+    def _move(self, image: _AnimatedImage, y: float) -> None:
+        _obs_client.set_scene_item_transform(self.scene, image.item_id, {"positionY": y})
+        image.current_y = y
+
+    def _animate(self, images, start_y: float, end_y: float, duration: float) -> None:
+        self._animate_each(
+            images,
+            {image.item_id: start_y for image in images},
+            {image.item_id: end_y for image in images},
+            duration,
+            interruptible=True,
+        )
+
+    def _animate_each(self, images, starts, ends, duration, interruptible) -> None:
+        """Déplace les images de leur départ à leur arrivée en ``duration`` secondes.
+
+        Une montée (``interruptible``) s'arrête net si le clip se termine ; la
+        descente finale, elle, va toujours jusqu'au bout.
+        """
+        frames = max(1, round(duration * ANIMATION_FPS))
+        for frame in range(1, frames + 1):
+            if interruptible and self._stop.is_set():
+                return
+            progress = _ease_out(frame / frames)
+            with _obs_lock:
+                for image in images:
+                    start, end = starts[image.item_id], ends[image.item_id]
+                    self._move(image, start + (end - start) * progress)
+            if frame < frames:
+                time.sleep(duration / frames)
+
+
+def hide_voice_images(all_voice_labels: list[str]) -> None:
+    """Masque immédiatement toutes les images des voix (sans animation)."""
+    scene = _load_image_scene()
+    image_sources = {
+        _comparable_name(voice_image_source_name(label)) for label in all_voice_labels
+    }
+    try:
+        with _obs_lock:
+            connect_to_obs()
+            client = _obs_client
+            if client is None:
+                return
+            for item in client.get_scene_item_list(scene).scene_items:
+                name = _comparable_name(item.get("sourceName") or "")
+                if name in image_sources and item.get("sceneItemEnabled"):
+                    client.set_scene_item_enabled(scene, item["sceneItemId"], False)
+    except Exception as exc:
+        logger.warning("Voice images not hidden (scene %r): %s", scene, exc)
 
 
 def _get_obs_local_file_path(audio_path: Path, obs_platform: str) -> str:

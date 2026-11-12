@@ -296,7 +296,235 @@ textarea:focus,
     text-decoration: underline;
 }
 
+/* Panneau de modération (/moderation/) : interrupteurs, file des demandes,
+   boutons d'action et formulaire des réglages. */
+
+.link {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.link:hover {
+    text-decoration: underline;
+}
+
+.notice {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+code {
+    background: var(--surface-2);
+    border-radius: 6px;
+    font-size: 0.85em;
+    padding: 0.1rem 0.35rem;
+}
+
+a.send-button {
+    display: inline-block;
+    text-decoration: none;
+}
+
+.toggles {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.toggle {
+    align-content: start;
+    display: grid;
+    gap: 0.4rem;
+}
+
+.toggle small,
+.setting small {
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.switch {
+    align-items: center;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-weight: 600;
+    gap: 0.6rem;
+    padding: 0.55rem 0.9rem;
+    text-align: left;
+}
+
+.switch-dot {
+    background: var(--muted);
+    border-radius: 50%;
+    flex-shrink: 0;
+    height: 0.75rem;
+    width: 0.75rem;
+}
+
+.switch-on {
+    border-color: var(--accent);
+}
+
+.switch-on .switch-dot {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+}
+
+.switch-danger {
+    border-color: var(--danger);
+}
+
+.switch-danger .switch-dot {
+    background: var(--danger);
+    box-shadow: 0 0 8px var(--danger);
+}
+
+.bot-status {
+    color: var(--muted);
+    margin: 0 0 1.25rem;
+}
+
+.bot-on {
+    color: var(--accent);
+}
+
+#queue {
+    display: grid;
+    gap: 1.25rem;
+}
+
+#queue .bot-status {
+    margin: 0;
+}
+
+.request {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.request-meta {
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.flag {
+    color: var(--danger);
+    font-size: 0.85rem;
+}
+
+.now-playing {
+    outline: 1px solid var(--accent);
+}
+
+.actions {
+    align-items: center;
+    display: flex;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    justify-content: flex-end;
+}
+
+.actions form {
+    margin: 0;
+}
+
+.button {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.4rem 0.75rem;
+}
+
+.button-ok {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+}
+
+.button-ghost {
+    background: transparent;
+    color: var(--text);
+}
+
+.button-danger {
+    background: transparent;
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.button:hover,
+.button:focus-visible {
+    filter: brightness(1.15);
+}
+
+.badge-bad {
+    background: rgba(255, 107, 107, 0.12);
+    color: var(--danger);
+}
+
+.settings-grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.setting {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.setting label {
+    font-weight: 600;
+}
+
+.setting input[type="text"],
+.setting input[type="number"],
+.setting select,
+.setting textarea {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font: inherit;
+    min-height: 0;
+    padding: 0.55rem 0.8rem;
+    width: 100%;
+}
+
+.setting-check {
+    align-content: start;
+    grid-template-columns: auto 1fr;
+}
+
+.setting-check small {
+    grid-column: 1 / -1;
+}
+
 @media (max-width: 700px) {
+    .toggles,
+    .settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .queue li {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .actions {
+        justify-content: flex-start;
+    }
+
     .tag-grid {
         grid-template-columns: 1fr;
     }

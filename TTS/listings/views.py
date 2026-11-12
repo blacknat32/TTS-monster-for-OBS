@@ -1,21 +1,28 @@
 import hashlib
 import logging
-from pathlib import Path
+from datetime import timedelta
 
-from django.shortcuts import render
+from django.contrib import messages
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+from django.views.decorators.http import require_POST
 
-from TTS.chatbot import (
-    TTSGenerationError,
-    VOICE_ID,
-    send_audio_sequence_to_obs,
-    send_audio_to_obs,
-    url_tts,
-)
+from TTS.chatbot import TTSGenerationError, stop_obs_playback
 
-from .form import PromptForm, SOUND_BITE_TAG_PATTERN
+from . import moderation, twitch
+from .form import ModerationSettingsForm, PromptForm
+from .models import ModerationSettings, TTSRequest, TwitchConnection
+from .playback import play_message
 
 
 logger = logging.getLogger(__name__)
+
+# Délai sans nouvelles du bot au-delà duquel le panneau affiche « Bot arrêté ».
+BOT_HEARTBEAT_TIMEOUT = timedelta(seconds=15)
+# Nombre de demandes terminées affichées dans l'historique.
+HISTORY_SIZE = 50
+# Réglages modifiables par les interrupteurs du haut du panneau.
+QUICK_TOGGLES = {"auto_approve", "accept_requests", "playback_paused"}
 
 
 def _get_clip_queue(request):
@@ -80,16 +87,11 @@ def index(request):
                 message = form.cleaned_data["message"]
                 if _clip_already_played(request, message):
                     error = "Ce clip a déjà été joué. Il n'est pas renvoyé dans OBS."
-                elif form.sound_bite_tags or form.voice_tags:
-                    _send_message_with_tags(
-                        message,
-                        form.sound_bite_tags,
-                        form.voice_tags,
-                    )
-                    _queue_clip(request, message)
                 else:
-                    audio_url = url_tts(message, VOICE_ID)
-                    send_audio_to_obs(audio_url)
+                    # La lecture est dans playback.py, partagée avec le bot.
+                    audio_url = play_message(
+                        message, form.sound_bite_tags, form.voice_tags
+                    )
                     _queue_clip(request, message)
                 clip_queue = _get_clip_queue(request)
             except TTSGenerationError as exc:
@@ -105,27 +107,153 @@ def index(request):
     )
 
 
-def _send_message_with_tags(
-    message: str,
-    sound_bite_tags: dict[str, Path],
-    voice_tags: dict[str, str],
-) -> None:
-    """Construit une séquence audio en mixant du texte, des sons et des changements de voix."""
-    audio_sequence: list[str | Path] = []
-    position = 0
-    voice_id = VOICE_ID
-    for match in SOUND_BITE_TAG_PATTERN.finditer(message):
-        normalized_tag = match.group(1).strip().casefold()
-        text = message[position : match.start()]
-        if text.strip():
-            audio_sequence.append(url_tts(text, voice_id))
-        if normalized_tag in sound_bite_tags:
-            audio_sequence.append(sound_bite_tags[normalized_tag])
-        else:
-            voice_id = voice_tags[normalized_tag]
-        position = match.end()
+# --- Panneau de modération --------------------------------------------------
+#
+# Le panneau (/moderation/) ne joue jamais de son lui-même : ses boutons
+# changent seulement le statut des demandes en base. C'est le worker du bot
+# (listings/worker.py) qui joue ce qui est « en file ».
+#
+# Tous les boutons envoient un POST puis redirigent vers le panneau
+# (« Post/Redirect/Get ») : actualiser la page ne renvoie pas l'action.
 
-    remaining_text = message[position:]
-    if remaining_text.strip():
-        audio_sequence.append(url_tts(remaining_text, voice_id))
-    send_audio_sequence_to_obs(audio_sequence)
+
+def _queue_context() -> dict:
+    """Données affichées par la file : listes de demandes et état du bot."""
+    connection = TwitchConnection.load()
+    heartbeat = connection.bot_heartbeat
+    return {
+        "settings": ModerationSettings.load(),
+        "connection": connection,
+        # Le bot écrit l'heure toutes les secondes : sans nouvelle depuis 15 s,
+        # on considère qu'il est arrêté.
+        "bot_running": bool(heartbeat and timezone.now() - heartbeat < BOT_HEARTBEAT_TIMEOUT),
+        "pending": TTSRequest.objects.filter(status=TTSRequest.Status.PENDING),
+        "playing": TTSRequest.objects.filter(status=TTSRequest.Status.PLAYING).first(),
+        "approved": TTSRequest.objects.filter(status=TTSRequest.Status.APPROVED).order_by(
+            "decided_at", "created_at", "pk"
+        ),
+        "history": TTSRequest.objects.filter(
+            status__in=[
+                TTSRequest.Status.PLAYED,
+                TTSRequest.Status.REJECTED,
+                TTSRequest.Status.FAILED,
+            ]
+        ).order_by("-created_at", "-pk")[:HISTORY_SIZE],
+    }
+
+
+def moderation_panel(request):
+    """Page complète du panneau ; en POST, enregistre le formulaire des réglages."""
+    settings = ModerationSettings.load()
+    if request.method == "POST":
+        settings_form = ModerationSettingsForm(request.POST, instance=settings)
+        if settings_form.is_valid():
+            settings_form.save()
+            messages.success(request, "Réglages enregistrés.")
+            return redirect("moderation")
+    else:
+        settings_form = ModerationSettingsForm(instance=settings)
+
+    context = _queue_context()
+    context.update({
+        "settings_form": settings_form,
+        "twitch_redirect_uri": twitch.redirect_uri(),
+    })
+    return render(request, "listings/moderation.html", context)
+
+
+def moderation_queue(request):
+    """Fragment HTML de la file seule.
+
+    Le script moderation.js le recharge toutes les 3 secondes pour afficher
+    les nouvelles demandes sans recharger toute la page.
+    """
+    return render(request, "listings/_moderation_queue.html", _queue_context())
+
+
+@require_POST
+def moderation_toggle(request, field):
+    """Interrupteurs du haut du panneau : inverse le réglage ``field``."""
+    # Liste blanche : on ne laisse pas l'URL modifier n'importe quel champ.
+    if field not in QUICK_TOGGLES:
+        return redirect("moderation")
+    settings = ModerationSettings.load()
+    setattr(settings, field, not getattr(settings, field))
+    settings.save(update_fields=[field])
+    return redirect("moderation")
+
+
+@require_POST
+def moderation_action(request, pk, action):
+    """Boutons d'une demande : approve, reject, remove, replay ou ban.
+
+    La logique de chaque action est dans moderation.py.
+    """
+    tts_request = get_object_or_404(TTSRequest, pk=pk)
+    if action == "approve":
+        moderation.approve(tts_request)
+    elif action in {"reject", "remove"}:
+        moderation.reject(tts_request)
+    elif action == "replay":
+        moderation.replay(tts_request)
+        messages.success(request, "Clip remis dans la file de lecture.")
+    elif action == "ban" and tts_request.twitch_login:
+        moderation.ban_user(tts_request.twitch_login)
+        messages.success(request, f"{tts_request.author} est banni du TTS.")
+    return redirect("moderation")
+
+
+@require_POST
+def moderation_skip(request):
+    """Bouton « Passer » : coupe le clip dans OBS.
+
+    Le worker, qui attend la fin du clip, voit la source s'arrêter et passe
+    au suivant.
+    """
+    try:
+        stop_obs_playback()
+    except TTSGenerationError as exc:
+        messages.error(request, str(exc))
+    return redirect("moderation")
+
+
+# --- Connexion du compte Twitch (OAuth, détails dans twitch.py) -------------
+
+
+def twitch_connect(request):
+    """Bouton « Connecter Twitch » : redirige vers la page d'autorisation de Twitch."""
+    try:
+        return redirect(twitch.build_authorize_url())
+    except twitch.TwitchError as exc:
+        messages.error(request, str(exc))
+        return redirect("moderation")
+
+
+def twitch_callback(request):
+    """Adresse où Twitch renvoie le streamer après l'autorisation.
+
+    Twitch ajoute ``?code=…&state=…`` (ou ``?error=…`` si le streamer a refusé).
+    """
+    if request.GET.get("error"):
+        messages.error(request, "Connexion à Twitch annulée.")
+        return redirect("moderation")
+    try:
+        connection = twitch.complete_authorization(
+            request.GET.get("code", ""), request.GET.get("state", "")
+        )
+    except twitch.TwitchError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            f"Compte Twitch « {connection.login} » connecté. Relance le bot s'il tournait déjà.",
+        )
+    return redirect("moderation")
+
+
+@require_POST
+def twitch_disconnect(request):
+    """Bouton « Déconnecter » : oublie les jetons Twitch."""
+    twitch.disconnect()
+    messages.success(request, "Compte Twitch déconnecté.")
+    return redirect("moderation")

@@ -83,6 +83,13 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # Le serveur web et le bot Twitch écrivent dans la même base : WAL et
+        # transactions IMMEDIATE évitent les erreurs « database is locked ».
+        'OPTIONS': {
+            'timeout': 20,
+            'transaction_mode': 'IMMEDIATE',
+            'init_command': 'PRAGMA journal_mode=WAL;',
+        },
     }
 }
 

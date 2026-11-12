@@ -1,0 +1,14 @@
+{% comment %}
+  Un interrupteur du haut du panneau (mode auto, demandes ouvertes, pause).
+  Paramètres : field (nom du réglage), value (état actuel), on / off
+  (libellés), hint (explication), danger (pastille rouge quand actif).
+  Le clic envoie un POST à moderation_toggle, qui inverse le réglage.
+{% endcomment %}
+<form method="post" action="{% url 'moderation_toggle' field %}" class="toggle">
+  {% csrf_token %}
+  <button type="submit" class="switch{% if value %} switch-on{% if danger %} switch-danger{% endif %}{% endif %}" aria-pressed="{{ value|yesno:'true,false' }}">
+    <span class="switch-dot" aria-hidden="true"></span>
+    {% if value %}{{ on }}{% else %}{{ off }}{% endif %}
+  </button>
+  <small>{{ hint }}</small>
+</form>

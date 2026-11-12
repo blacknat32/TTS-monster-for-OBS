@@ -5,3 +5,15 @@ password = ""
 
 [audio]
 input_name = "TTS Audio"
+
+[images]
+# Scène OBS qui contient les images des voix, nommées « Adam OBS Image »,
+# « Kermit OBS Image »… Ajoute cette scène comme source dans ta scène de stream.
+scene = "TTS Image"
+
+# Animation des images (en secondes). Relance « manage.py stream » après un
+# changement. Les explications détaillées sont dans TTS/TTS/chatbot.py
+# (cadre « RÉGLAGES DES IMAGES ET DES ANIMATIONS »).
+rise_delay = 1.0      # décalage entre la montée de deux images (0 = ensemble)
+rise_duration = 0.6   # durée de la montée d'une image
+fall_duration = 3.0   # durée de la descente finale (toutes ensemble)
