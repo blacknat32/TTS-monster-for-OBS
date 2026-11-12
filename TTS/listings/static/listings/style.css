@@ -467,6 +467,55 @@ a.send-button {
     filter: brightness(1.15);
 }
 
+/* Historique repliable : le titre sert de bouton, la liste défile dans une
+   zone dont on règle la hauteur avec la poignée en bas à droite. */
+.collapsible > summary {
+    cursor: pointer;
+    list-style: none;
+    margin: 0;
+    user-select: none;
+}
+
+.collapsible > summary::-webkit-details-marker {
+    display: none;
+}
+
+.collapsible > summary > span::before {
+    color: var(--muted);
+    content: "▸";
+    display: inline-block;
+    margin-right: 0.5rem;
+    transition: transform 0.15s;
+}
+
+.collapsible[open] > summary {
+    margin-bottom: 0.75rem;
+}
+
+.collapsible[open] > summary > span::before {
+    transform: rotate(90deg);
+}
+
+.collapsible > summary:hover > span,
+.collapsible > summary:focus-visible > span {
+    color: var(--accent);
+}
+
+.collapsible > summary:focus-visible {
+    outline: none;
+}
+
+.history-scroll {
+    align-content: start;
+    height: 20rem;
+    min-height: 5rem;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+    resize: vertical;
+    scrollbar-color: var(--border) transparent;
+    scrollbar-width: thin;
+}
+
 .badge-bad {
     background: rgba(255, 107, 107, 0.12);
     color: var(--danger);
