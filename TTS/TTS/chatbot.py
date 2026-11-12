@@ -209,7 +209,7 @@ def stop_obs_playback() -> None:
 
 
 # --- Images des voix -----------------------------------------------------------
-# Pendant un clip, OBS affiche une image pour chaque voix du message, avec une
+# Pendant un TTS, OBS affiche une image pour chaque voix du message, avec une
 # animation :
 #
 # - les images **montent** du bas de l'écran jusqu'à leur place, une par une,
