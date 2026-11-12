@@ -283,7 +283,7 @@ ton PC, à côté d'OBS. Aucune URL publique n'est nécessaire.
  Chat Twitch : !tts {Kermit} Salut {bruh}      ou      récompense de points de chaîne
         │  EventSub (WebSocket)
         ▼
- Bot (manage.py twitch_bot) ── droits, cooldown, bannis, mots interdits
+ Bot (manage.py stream) ──── droits, cooldown, bannis, mots interdits
         │
         ├─ mode manuel ──▶ « À valider » ──▶ tu approuves ou refuses dans le panneau
         └─ mode auto ────▶ directement dans la file de lecture
@@ -315,7 +315,33 @@ ton PC, à côté d'OBS. Aucune URL publique n'est nécessaire.
 
 ### Pendant le stream
 
-Il faut **deux terminaux** (venv activé dans chacun) :
+Lance OBS, active le venv, puis **une seule commande** :
+
+```bash
+python TTS/manage.py stream
+```
+
+Elle démarre ensemble :
+- le **panneau** sur [http://localhost:8000/moderation/](http://localhost:8000/moderation/) ;
+- le **bot**, qui écoute Twitch **et joue les clips dans OBS**, un par un.
+
+Le terminal affiche en direct ce que fait le bot (demande reçue, ignorée et
+pourquoi, clip joué…). `Ctrl+C` arrête tout.
+
+**Changer de port** (par exemple 9000) : modifie l'URL de redirection à deux
+endroits, et `stream` utilisera automatiquement ce port :
+
+- dans la console Twitch : `http://localhost:9000/twitch/callback/` ;
+- dans `.env` : `TWITCH_REDIRECT_URI=http://localhost:9000/twitch/callback/`.
+
+Le panneau sera alors sur `http://localhost:9000/moderation/`. Tu peux aussi
+forcer un port ponctuellement : `python TTS/manage.py stream 9000`.
+
+#### Variante : deux terminaux
+
+Si tu modifies le code pendant que l'app tourne, lance le panneau et le bot
+séparément. `runserver` redémarre alors à chaque modification, ce que
+`stream` ne fait pas volontairement, pour ne jamais lancer le bot en double :
 
 ```bash
 python TTS/manage.py runserver
@@ -325,10 +351,9 @@ python TTS/manage.py runserver
 python TTS/manage.py twitch_bot
 ```
 
-Le premier sert le panneau, le second écoute Twitch **et joue les clips dans
-OBS**. Le panneau affiche « ● Bot actif » quand le second tourne.
-
-> Sans le bot, les demandes s'accumulent dans le panneau mais **rien n'est joué**.
+> Sans le bot (`stream` ou `twitch_bot`), les demandes s'accumulent dans le
+> panneau mais **rien n'est joué**. Le panneau affiche « ● Bot actif » quand
+> il tourne.
 
 ### Côté viewers
 
@@ -357,7 +382,7 @@ validation. Pense à remplir la liste *Mots interdits* avant de passer en
 automatique.
 
 Pour tester sans Twitch (par exemple le bouton *Rejouer*) :
-`python TTS/manage.py twitch_bot --no-twitch`.
+`python TTS/manage.py stream --no-twitch`.
 
 ### Le panneau (`/moderation/`)
 
@@ -446,7 +471,7 @@ l'ancien CSS en cache.
 | `TWITCH_CLIENT_ID et TWITCH_CLIENT_SECRET doivent être renseignés` | Ajoute-les dans `.env`, puis relance le serveur. |
 | Twitch affiche `redirect_mismatch` | L'URL de redirection de ton application Twitch doit être exactement `http://localhost:8000/twitch/callback/` (ou la valeur de `TWITCH_REDIRECT_URI`). |
 | « La réponse de Twitch ne correspond pas à la demande » | Recommence depuis le bouton *Connecter Twitch* du panneau, ouvert via `localhost`. |
-| Le panneau affiche « ○ Bot arrêté » | Lance `python TTS/manage.py twitch_bot` dans un second terminal. |
+| Le panneau affiche « ○ Bot arrêté » | Lance le panneau avec `python TTS/manage.py stream` (ou `twitch_bot` dans un second terminal si tu utilises `runserver`). |
 | `!tts` ne crée aucune demande | Vérifie la commande et *Qui peut utiliser la commande* dans les réglages, le cooldown, la liste des bannis et l'interrupteur *Demandes ouvertes*. Le terminal du bot indique pourquoi une demande est ignorée. |
 | Les points de chaîne ne font rien | Le titre de la récompense doit être recopié exactement dans les réglages, et la récompense doit demander une saisie de texte. Réservé aux affiliés et partenaires. |
 | Les demandes restent « En file » | Le bot est arrêté, ou la lecture est en pause. |
@@ -477,7 +502,10 @@ TTS-monster-for-OBS/
     │   ├── moderation.py         # règles d'entrée dans la file (auto / manuel)
     │   ├── twitch.py             # OAuth et EventSub (chat, points de chaîne)
     │   ├── worker.py             # lecture des demandes validées, une par une
-    │   ├── management/commands/twitch_bot.py
+    │   ├── bot_runner.py         # démarrage / arrêt du bot (Twitch + lecture)
+    │   ├── management/commands/
+    │   │   ├── stream.py         # manage.py stream : panneau + bot
+    │   │   └── twitch_bot.py     # manage.py twitch_bot : bot seul
     │   ├── views.py              # page /message/ et panneau /moderation/
     │   ├── templates/listings/
     │   ├── static/listings/      # style.css, prompt-tags.js, moderation.js

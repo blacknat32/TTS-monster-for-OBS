@@ -432,3 +432,86 @@ class ModerationPanelTests(SoundBiteDirectoryMixin, TestCase):
 
         self.assertContains(response, "Fragment")
         self.assertContains(response, "Bot arrêté")
+
+
+class StreamCommandTests(TestCase):
+    @patch("listings.management.commands.stream.BotRunner")
+    @patch("listings.management.commands.stream.call_command")
+    def test_stream_starts_bot_then_panel_without_reloader(self, call, runner_class):
+        from io import StringIO
+        from django.core.management import call_command as run_command
+
+        out = StringIO()
+        run_command("stream", "9000", stdout=out)
+
+        runner_class.assert_called_once_with(with_twitch=True)
+        runner_class.return_value.start.assert_called_once()
+        call.assert_called_once_with("runserver", "9000", use_reloader=False)
+        runner_class.return_value.stop.assert_called_once()
+        self.assertIn("http://localhost:9000/moderation/", out.getvalue())
+
+    @patch("listings.management.commands.stream.BotRunner")
+    @patch("listings.management.commands.stream.call_command", side_effect=SystemExit(0))
+    def test_bot_is_stopped_when_panel_stops(self, call, runner_class):
+        from io import StringIO
+        from django.core.management import call_command as run_command
+
+        with self.assertRaises(SystemExit):
+            run_command("stream", "--no-twitch", stdout=StringIO())
+
+        runner_class.assert_called_once_with(with_twitch=False)
+        runner_class.return_value.stop.assert_called_once()
+
+
+class BotRunnerTests(TestCase):
+    def test_runner_without_twitch_starts_only_the_worker(self):
+        from listings.bot_runner import BotRunner
+
+        def fake_worker(stop_event):
+            stop_event.wait(5)
+
+        with patch("listings.bot_runner.run_worker", fake_worker), \
+                patch("listings.bot_runner.EventSubClient") as client:
+            runner = BotRunner(with_twitch=False)
+            runner.start()
+            self.assertEqual([t.name for t in runner.threads], ["tts-worker"])
+            runner.stop()
+
+        client.assert_not_called()
+        self.assertFalse(any(t.is_alive() for t in runner.threads))
+        self.assertEqual(TwitchConnection.load().bot_status, "Arrêté")
+
+
+class StreamDefaultPortTests(TestCase):
+    def run_stream(self):
+        from io import StringIO
+        from django.core.management import call_command as run_command
+
+        with patch("listings.management.commands.stream.BotRunner"), \
+                patch("listings.management.commands.stream.call_command") as call:
+            out = StringIO()
+            run_command("stream", stdout=out)
+        return call.call_args.args[1], out.getvalue()
+
+    def test_port_comes_from_twitch_redirect_uri(self):
+        with patch.dict("os.environ", {
+            "TWITCH_REDIRECT_URI": "http://localhost:9000/twitch/callback/",
+        }):
+            addrport, output = self.run_stream()
+
+        self.assertEqual(addrport, "9000")
+        self.assertIn("http://localhost:9000/moderation/", output)
+
+    def test_default_port_is_8000_without_redirect_uri(self):
+        with patch.dict("os.environ", {}):
+            import os
+            os.environ.pop("TWITCH_REDIRECT_URI", None)
+            addrport, _ = self.run_stream()
+
+        self.assertEqual(addrport, "8000")
+
+    def test_invalid_redirect_uri_falls_back_to_8000(self):
+        with patch.dict("os.environ", {"TWITCH_REDIRECT_URI": "http://localhost:abc/"}):
+            addrport, _ = self.run_stream()
+
+        self.assertEqual(addrport, "8000")

@@ -6,7 +6,7 @@
 {% endcomment %}
 <p class="bot-status{% if bot_running %} bot-on{% endif %}">
   {% if bot_running %}● Bot actif{% if connection.bot_status %} — {{ connection.bot_status }}{% endif %}
-  {% else %}○ Bot arrêté — lance <code>python TTS/manage.py twitch_bot</code> pour lire les demandes{% endif %}
+  {% else %}○ Bot arrêté — rien ne sera joué. Lance <code>python TTS/manage.py stream</code> (à la place de <code>runserver</code>) ou <code>twitch_bot</code> dans un second terminal{% endif %}
 </p>
 
 <section class="card" aria-label="Demandes à valider">
